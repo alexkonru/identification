@@ -122,8 +122,11 @@ impl ModelStore {
 
 // --- Service Implementation ---
 
+use tokio::sync::mpsc;
+
 struct AudioService {
     models: Arc<ModelStore>,
+    shutdown_tx: mpsc::Sender<()>,
 }
 
 #[tonic::async_trait]
@@ -268,6 +271,14 @@ impl Audio for AudioService {
             execution_provider: "CPU".to_string(),
         }))
     }
+    async fn shutdown(&self, _request: Request<Empty>) -> Result<Response<Empty>, Status> {
+        info!("Shutdown signal received");
+        self.shutdown_tx.send(()).await.map_err(|e| {
+            error!("Failed to send shutdown signal: {}", e);
+            Status::internal("Failed to send shutdown signal")
+        })?;
+        Ok(Response::new(Empty {}))
+    }
 }
 
 // --- Main ---
@@ -303,11 +314,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let addr = "0.0.0.0:50053".parse()?; // Different port than vision (50052)
     info!("Audio Worker listening on {}", addr);
 
-    let service = AudioService { models };
+    let (shutdown_tx, mut shutdown_rx) = mpsc::channel(1);
+
+    let service = AudioService {
+        models,
+        shutdown_tx,
+    };
 
     Server::builder()
         .add_service(AudioServer::new(service))
-        .serve(addr)
+        .serve_with_shutdown(addr, async {
+            shutdown_rx.recv().await;
+            info!("Gracefully shutting down Audio Worker");
+        })
         .await?;
 
     Ok(())

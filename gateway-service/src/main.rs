@@ -14,6 +14,8 @@ use sqlx::postgres::PgPoolOptions;
 use sqlx::{Pool, Postgres, Row};
 use tonic::{transport::{Server, Channel}, Request, Response, Status};
 use pgvector::Vector;
+use tokio::sync::mpsc;
+use glob::glob;
 
 // Struct to hold full processing details
 struct FaceProcessResult {
@@ -23,24 +25,24 @@ struct FaceProcessResult {
     provider: String,
 }
 
-
-
 pub struct GatewayService {
     pool: Pool<Postgres>,
     audio_channel: Channel,
     vision_channel: Channel,
     face_similarity_threshold: f64,
     test_device_id: i32,
+    shutdown_tx: mpsc::Sender<()>,
 }
 
 impl GatewayService {
-    pub fn new(pool: Pool<Postgres>, audio_channel: Channel, vision_channel: Channel, face_similarity_threshold: f64, test_device_id: i32) -> Self {
+    pub fn new(pool: Pool<Postgres>, audio_channel: Channel, vision_channel: Channel, face_similarity_threshold: f64, test_device_id: i32, shutdown_tx: mpsc::Sender<()>) -> Self {
         Self {
             pool,
             audio_channel,
             vision_channel,
             face_similarity_threshold,
             test_device_id,
+            shutdown_tx,
         }
     }
 
@@ -347,13 +349,20 @@ impl Gatekeeper for GatewayService {
         .await
         .map_err(|e| Status::internal(e.to_string()))?;
 
-        let mut devices: Vec<Device> = rows.into_iter().map(|r| Device {
-            id: r.get("id"),
-            room_id: r.get("room_id"),
-            name: r.get("name"),
-            device_type: r.get("device_type"),
-            connection_string: r.get("connection_string"),
-            is_active: true,
+        let mut devices: Vec<Device> = rows.into_iter().map(|r| {
+            let id: i32 = r.get("id");
+            let room_id: i32 = r.get("room_id");
+            let name: String = r.get("name");
+            let device_type: String = r.get("device_type");
+            let connection_string: String = r.get("connection_string");
+            Device {
+                id,
+                room_id,
+                name,
+                device_type,
+                connection_string,
+                is_active: true,
+            }
         }).collect();
 
         if devices.is_empty() {
@@ -368,7 +377,7 @@ impl Gatekeeper for GatewayService {
         request: Request<IdRequest>,
     ) -> Result<Response<Empty>, Status> {
         let req = request.into_inner();
-        sqlx::query("DELETE FROM devices WHERE id = $1")
+        sqlx::query("DELETE FROM users WHERE id = $1")
             .bind(req.id)
             .execute(&self.pool)
             .await
@@ -632,16 +641,25 @@ impl Gatekeeper for GatewayService {
         .await
         .map_err(|e| Status::internal(e.to_string()))?;
 
-        let logs = rows.into_iter().map(|row| LogEntry {
-            id: row.get("id"),
-            timestamp: row.get::<Option<chrono::DateTime<chrono::Utc>>, _>("created_at")
+        let logs = rows.into_iter().map(|row| {
+            let id: i32 = row.get("id");
+            let timestamp: String = row.get::<Option<chrono::DateTime<chrono::Utc>>, _>("created_at")
                 .map(|t| t.to_rfc3339())
-                .unwrap_or_default(),
-            user_name: row.get::<Option<String>, _>("user_name").unwrap_or_else(|| "Unknown".to_string()),
-            room_name: row.get::<Option<String>, _>("room_name").unwrap_or_default(),
-            zone_name: row.get::<Option<String>, _>("zone_name").unwrap_or_default(),
-            access_granted: row.get("granted"),
-            details: row.get::<Option<String>, _>("details").unwrap_or_default(),
+                .unwrap_or_default();
+            let user_name: String = row.get::<Option<String>, _>("user_name").unwrap_or_else(|| "Unknown".to_string());
+            let room_name: String = row.get::<Option<String>, _>("room_name").unwrap_or_default();
+            let zone_name: String = row.get::<Option<String>, _>("zone_name").unwrap_or_default();
+            let access_granted: bool = row.get("granted");
+            let details: String = row.get::<Option<String>, _>("details").unwrap_or_default();
+            LogEntry {
+                id,
+                timestamp,
+                user_name,
+                room_name,
+                zone_name,
+                access_granted,
+                details,
+            }
         })
         .collect();
 
@@ -682,11 +700,59 @@ impl Gatekeeper for GatewayService {
         }))
     }
 
+    async fn shutdown(&self, _request: Request<Empty>) -> Result<Response<Empty>, Status> {
+        tracing::info!("Shutdown signal received for gateway");
+        // It's okay to ignore the error if the receiver is already dropped.
+        let _ = self.shutdown_tx.send(()).await;
+        Ok(Response::new(Empty {}))
+    }
+
     async fn control_service(
         &self,
-        _request: Request<ControlServiceRequest>,
+        request: Request<ControlServiceRequest>,
     ) -> Result<Response<StatusResponse>, Status> {
-         Ok(Response::new(StatusResponse { success: false, message: "Not implemented".to_string() }))
+        let req = request.into_inner();
+        let service_name = req.service_name.to_lowercase();
+        let action = req.action.to_lowercase();
+
+        if action != "shutdown" {
+            return Ok(Response::new(StatusResponse {
+                success: false,
+                message: format!("Action '{}' not supported", action),
+            }));
+        }
+
+        let (success, message) = match service_name.as_str() {
+            "audio" => {
+                let mut client = AudioClient::new(self.audio_channel.clone());
+                if let Err(e) = client.shutdown(Request::new(Empty {})).await {
+                    (false, format!("Failed to shutdown audio worker: {}", e))
+                } else {
+                    (true, "Audio worker shutdown signal sent".to_string())
+                }
+            }
+            "vision" => {
+                let mut client = VisionClient::new(self.vision_channel.clone());
+                if let Err(e) = client.shutdown(Request::new(Empty {})).await {
+                    (false, format!("Failed to shutdown vision worker: {}", e))
+                } else {
+                    (true, "Vision worker shutdown signal sent".to_string())
+                }
+            }
+            "gateway" => {
+                // To avoid deadlocking, we send the shutdown signal in a separate task
+                let tx = self.shutdown_tx.clone();
+                tokio::spawn(async move {
+                    let _ = tx.send(()).await;
+                });
+                (true, "Gateway shutdown initiated".to_string())
+            }
+            _ => {
+                (false, format!("Service '{}' not recognized", service_name))
+            }
+        };
+
+        Ok(Response::new(StatusResponse { success, message }))
     }
 
     async fn control_door(
@@ -700,27 +766,58 @@ impl Gatekeeper for GatewayService {
         &self,
         _request: Request<Empty>,
     ) -> Result<Response<ScanHardwareResponse>, Status> {
-        let rows = sqlx::query(
+        let mut found_devices: Vec<Device> = Vec::new();
+
+        // 1. Get existing devices from DB
+        let db_devices: Vec<Device> = sqlx::query_as(
             "SELECT id, room_id, name, device_type, connection_string FROM devices"
         )
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| Status::internal(e.to_string()))?;
-
-        let mut devices: Vec<Device> = rows.into_iter().map(|r| Device {
-            id: r.get("id"),
-            room_id: r.get("room_id"),
-            name: r.get("name"),
-            device_type: r.get("device_type"),
-            connection_string: r.get("connection_string"),
+        .map_err(|e| Status::internal(e.to_string()))?
+        .into_iter()
+        .map(|(id, room_id, name, device_type, connection_string)| Device {
+            id,
+            room_id,
+            name,
+            device_type,
+            connection_string,
             is_active: true,
         }).collect();
+        
+        found_devices.extend(db_devices.clone());
 
-        if devices.is_empty() {
-             devices.push(self.get_default_test_device().await);
+        // 2. Scan for local /dev/video* devices
+        if let Ok(paths) = glob("/dev/video*") {
+            for entry in paths {
+                if let Ok(path) = entry {
+                    let path_str = path.to_string_lossy();
+                    if let Some(num_str) = path_str.strip_prefix("/dev/video") {
+                        if let Ok(num) = num_str.parse::<i32>() {
+                            let conn_str = num.to_string();
+                            // Check if a device with this connection string already exists
+                            if !db_devices.iter().any(|d| d.connection_string == conn_str) {
+                                found_devices.push(Device {
+                                    id: -1, // Not in DB
+                                    room_id: 0,
+                                    name: format!("New Camera {}", num),
+                                    device_type: "camera".to_string(),
+                                    connection_string: conn_str,
+                                    is_active: true,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Add default device if nothing is found at all
+        if found_devices.is_empty() {
+            found_devices.push(self.get_default_test_device().await);
         }
 
-        Ok(Response::new(ScanHardwareResponse { found_devices: devices }))
+        Ok(Response::new(ScanHardwareResponse { found_devices }))
     }
 }
 
@@ -757,14 +854,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|_| "9999".to_string())
         .parse::<i32>()
         .expect("TEST_DEVICE_ID must be a valid i32");
+    
+    let (shutdown_tx, mut shutdown_rx) = mpsc::channel(1);
 
-    let gateway = GatewayService::new(pool, audio_channel, vision_channel, face_similarity_threshold, test_device_id);
+    let gateway = GatewayService::new(pool, audio_channel, vision_channel, face_similarity_threshold, test_device_id, shutdown_tx);
 
     tracing::info!("Gateway Service listening on {}", addr);
 
     Server::builder()
         .add_service(GatekeeperServer::new(gateway))
-        .serve(addr)
+        .serve_with_shutdown(addr, async {
+            shutdown_rx.recv().await;
+            tracing::info!("Gracefully shutting down Gateway Service");
+        })
         .await?;
 
     Ok(())

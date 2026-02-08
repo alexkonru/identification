@@ -35,16 +35,19 @@ service Gatekeeper {
   
   // --- Журнал ---
   rpc GetLogs (GetLogsRequest) returns (GetLogsResponse);
+  rpc Shutdown(Empty) returns (Empty);
 }
 
 service Vision {
   rpc ProcessFace (ImageFrame) returns (BioResult);
   rpc GetStatus (Empty) returns (ServiceStatus);
+  rpc Shutdown(Empty) returns (Empty);
 }
 
 service Audio {
   rpc ProcessVoice (AudioChunk) returns (BioResult);
   rpc GetStatus (Empty) returns (ServiceStatus);
+  rpc Shutdown(Empty) returns (Empty);
 }
 
 // --- Сообщения ---

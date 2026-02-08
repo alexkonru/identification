@@ -227,8 +227,11 @@ impl ModelStore {
 
 // --- Реализация сервиса ---
 
+use tokio::sync::mpsc;
+
 struct VisionService {
     models: Arc<ModelStore>,
+    shutdown_tx: mpsc::Sender<()>,
 }
 
 #[tonic::async_trait]
@@ -397,6 +400,14 @@ impl Vision for VisionService {
             execution_provider: self.models.provider.clone(),
         }))
     }
+    async fn shutdown(&self, _request: Request<Empty>) -> Result<Response<Empty>, Status> {
+        info!("Shutdown signal received");
+        self.shutdown_tx.send(()).await.map_err(|e| {
+            error!("Failed to send shutdown signal: {}", e);
+            Status::internal("Failed to send shutdown signal")
+        })?;
+        Ok(Response::new(Empty {}))
+    }
 }
 
 // --- Main ---
@@ -429,11 +440,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let addr = "0.0.0.0:50052".parse()?;
     info!("Vision Worker слушает на {} (Provider: {})", addr, models.provider);
 
-    let service = VisionService { models };
+    let (shutdown_tx, mut shutdown_rx) = mpsc::channel(1);
+
+    let service = VisionService {
+        models,
+        shutdown_tx,
+    };
 
     Server::builder()
         .add_service(VisionServer::new(service))
-        .serve(addr)
+        .serve_with_shutdown(addr, async {
+            shutdown_rx.recv().await;
+            info!("Gracefully shutting down Vision Worker");
+        })
         .await?;
 
     Ok(())
