@@ -1,0 +1,923 @@
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+   Compiling shared v0.1.0 (/home/alexandr/Рабочий стол/identification/shared)
+   Compiling audio-worker v0.1.0 (/home/alexandr/Рабочий стол/identification/audio-worker)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 6.64s
+     Running `target/debug/audio-worker`
+[2m2026-01-30T16:56:27.547794Z[0m [32m INFO[0m [2maudio_worker[0m[2m:[0m Initializing Audio Worker...
+[2m2026-01-30T16:56:27.567271Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Discovered OrtHardwareDevice {vendor_id:0x10de, device_id:0x1d11, vendor:, type:1, metadata: [card_idx=1, ]}
+[2m2026-01-30T16:56:27.567333Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Discovered OrtHardwareDevice {vendor_id:0x1002, device_id:0x15d8, vendor:, type:1, metadata: [card_idx=2, ]}
+[2m2026-01-30T16:56:27.567360Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Discovered OrtHardwareDevice {vendor_id:0x1022, device_id:0x0, vendor:AMD, type:0, metadata: []}
+[2m2026-01-30T16:56:27.567939Z[0m [32m INFO[0m [2maudio_worker[0m[2m:[0m Loading models from audio-worker/models
+[2m2026-01-30T16:56:27.568121Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Session Options {  execution_mode:0 execution_order:DEFAULT enable_profiling:0 optimized_model_filepath:"" enable_mem_pattern:1 enable_mem_reuse:1 enable_cpu_mem_arena:1 profile_file_prefix:onnxruntime_profile_ session_logid: session_log_severity_level:-1 session_log_verbosity_level:0 max_num_graph_transformation_steps:10 graph_optimization_level:3 intra_op_param:OrtThreadPoolParams { thread_pool_size: 4 auto_set_affinity: 0 allow_spinning: 0 dynamic_block_base_: 0 stack_size: 0 affinity_str:  set_denormal_as_zero: 0 } inter_op_param:OrtThreadPoolParams { thread_pool_size: 0 auto_set_affinity: 0 allow_spinning: 0 dynamic_block_base_: 0 stack_size: 0 affinity_str:  set_denormal_as_zero: 0 } use_per_session_threads:1 thread_pool_allow_spinning:1 use_deterministic_compute:0 ep_selection_policy:0 config_options: {  } }
+[2m2026-01-30T16:56:27.568216Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Flush-to-zero and denormal-as-zero are off
+[2m2026-01-30T16:56:27.568238Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Creating and using per session threadpools since use_per_session_threads_ is true
+[2m2026-01-30T16:56:27.568264Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Dynamic block base set to 0
+[2m2026-01-30T16:56:27.607326Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Initializing session.
+[2m2026-01-30T16:56:27.607419Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Adding default CPU execution provider.
+[2m2026-01-30T16:56:27.607479Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Creating BFCArena for Cpu with following configs: initial_chunk_size_bytes: 1048576 max_dead_bytes_per_chunk: 134217728 initial_growth_chunk_size_bytes: 2097152 max_power_of_two_extend_bytes: 1073741824 memory limit: 18446744073709551615 arena_extend_strategy: 0
+[2m2026-01-30T16:56:27.610966Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m This model does not have any local functions defined. AOT Inlining is not performed
+[2m2026-01-30T16:56:27.611612Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer EnsureUniqueDQForNodeUnit modified: 0 with status: OK
+[2m2026-01-30T16:56:27.612511Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer Level1_RuleBasedTransformer modified: 1 with status: OK
+[2m2026-01-30T16:56:27.626512Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/stft/Constant_19_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.626673Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/stft/Constant_20_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.626706Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/stft/Constant_12_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.626748Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/stft/Constant_5_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.626791Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/stft/Constant_4_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.626826Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/stft/Constant_18_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.626859Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/stft/Constant_11_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.626888Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/stft/Constant_13_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.626917Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/stft/Constant_10_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.626944Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/stft/Constant_2_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.626969Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/stft/Constant_21_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.626993Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/stft/Constant_3_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.627321Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/stft/Constant_18_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.627362Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/stft/Constant_11_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.627389Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/stft/Constant_10_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.627415Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/stft/Constant_12_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.627442Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/stft/Constant_19_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.627467Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/stft/Constant_5_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.627495Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/stft/Constant_20_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.627521Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/stft/Constant_13_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.627554Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/stft/Constant_4_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.627581Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/stft/Constant_21_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.627606Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/stft/Constant_2_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.627630Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/stft/Constant_3_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.627879Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer DoubleQDQPairsRemover modified: 0 with status: OK
+[2m2026-01-30T16:56:27.627948Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer ConstantSharing modified: 0 with status: OK
+[2m2026-01-30T16:56:27.629004Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer CommonSubexpressionElimination modified: 0 with status: OK
+[2m2026-01-30T16:56:27.644247Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer ConstantFolding modified: 1 with status: OK
+[2m2026-01-30T16:56:27.654689Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/stft/padding/Transpose_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.655019Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/stft/padding/ConstantOfShape_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.655151Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__decoder.rnn.bias_ih'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.655320Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__decoder.rnn.weight_hh'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.655485Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/stft/padding/Constant_5_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.655521Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__decoder.rnn.weight_ih'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.655547Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/stft/padding/Constant_7_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.655573Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/stft/padding/Slice_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.655599Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/stft/padding/Concat_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.655623Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__self.stft.hop_length'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.655645Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/stft/padding/Constant_2_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.655667Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/stft/padding/Reshape_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.655690Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/stft/padding/Constant_3_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.655712Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/stft/padding/Constant_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.655735Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/stft/padding/Constant_1_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.655756Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/stft/padding/Constant_4_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.655778Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/stft/padding/Constant_6_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.655801Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__decoder.rnn.bias_hh'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.655952Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn_1/Slice_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.655984Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn_1/Slice_2_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.656006Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn_1/Concat_2_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.656029Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn_1/Slice_3_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.656244Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn_1/Slice_4_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.656391Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn_1/Concat_1_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.656545Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn_1/Constant_27_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.656654Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn_1/Constant_25_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.656797Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn_1/Constant_23_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.656948Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn_1/Constant_22_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.657109Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn_1/Constant_20_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.657259Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn_1/Constant_16_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.657409Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn_1/Slice_5_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.657555Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn_1/Constant_13_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.657671Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn_1/Constant_17_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.657701Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn_1/Constant_11_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.657727Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn_1/Constant_38_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.657751Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn_1/Constant_12_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.657773Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn_1/Constant_28_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.657796Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn_1/Constant_18_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.657826Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn_1/Constant_6_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.657855Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn_1/Constant_41_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.657878Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn_1/Slice_8_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.657900Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn_1/Constant_8_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.657923Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn_1/Constant_14_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.657946Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn_1/Constant_9_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.657968Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn_1/Slice_1_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.657990Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn_1/Constant_34_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.658012Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn_1/Constant_24_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.658034Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn_1/Concat_5_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.658341Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn_1/Constant_10_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.658504Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn_1/Constant_29_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.658652Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn_1/Constant_40_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.658897Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn_1/Slice_10_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.659086Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn_1/Constant_30_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.659173Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn_1/Constant_31_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.659199Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn_1/Constant_32_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.659223Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__250'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.659244Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn_1/Constant_26_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.659266Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn_1/Constant_33_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.659289Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn_1/Constant_35_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.659320Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn_1/Constant_7_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.659350Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn_1/Constant_36_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.659373Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn_1/Constant_37_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.659396Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn_1/Constant_39_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.659418Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn_1/Constant_43_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.659441Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn_1/Constant_15_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.659464Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn_1/Slice_11_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.659487Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn_1/Constant_21_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.659511Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn_1/Slice_7_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.659533Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn_1/Slice_6_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.659555Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn_1/Constant_44_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.659578Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn_1/Slice_9_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.659601Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn_1/Concat_3_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.659623Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn_1/Constant_19_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.659645Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn_1/Constant_42_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.659668Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn_1/Concat_4_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.659817Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn/Slice_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.659841Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn/Slice_1_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.659864Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn/Constant_27_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.659887Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn/Slice_7_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.659916Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn/Constant_26_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.659942Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn/Constant_17_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.659964Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn/Constant_21_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.659986Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn/Constant_29_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.660008Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn/Constant_20_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.660031Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn/Constant_19_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.660432Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn/Constant_24_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.660588Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn/Constant_16_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.660744Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn/Constant_10_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.660903Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn/Constant_34_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.661075Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn/Constant_36_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.661220Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn/Constant_14_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.661368Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn/Constant_45_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.661520Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn/Slice_4_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.661670Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn/Concat_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.661825Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn/Constant_30_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.661975Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn/Constant_25_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.662140Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn/Constant_22_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.662291Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn/Constant_9_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.662441Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn/Constant_18_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.662593Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn/Constant_12_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.662756Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn/Constant_23_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.662910Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn/Slice_2_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.663085Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn/Constant_31_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.663241Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn/Constant_8_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.663392Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn/Constant_44_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.663532Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn/Constant_13_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.663564Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn/Constant_15_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.663587Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn/Constant_32_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.663666Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn/Constant_35_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.663689Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn/Constant_38_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.663712Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn/Constant_40_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.663734Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn/Constant_37_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.663756Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn/Constant_33_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.663778Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn/Constant_39_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.663800Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn/Constant_41_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.663822Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn/Constant_28_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.663845Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn/Slice_11_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.663867Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn/Constant_11_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.663889Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn/Slice_5_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.663910Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn/Constant_42_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.663940Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn/Concat_4_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.663970Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn/Constant_43_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.663993Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn/Slice_10_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.664015Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn/Slice_3_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.664239Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn/Slice_9_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.664394Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn/Constant_7_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.664541Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn/Concat_3_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.664682Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn/Slice_8_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.664833Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn/Slice_6_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.664984Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn/Concat_2_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.665141Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/decoder/rnn/Concat_1_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.665475Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/stft/padding/Concat_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.665664Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/stft/padding/Transpose_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.665820Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__decoder.rnn.bias_ih'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.665970Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/stft/padding/Slice_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.666154Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/stft/padding/ConstantOfShape_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.666309Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__decoder.rnn.bias_hh'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.666452Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__decoder.rnn.weight_ih'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.666607Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/stft/padding/Constant_2_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.666758Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/stft/padding/Constant_7_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.666911Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/stft/padding/Constant_6_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.667110Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/stft/padding/Constant_4_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.667273Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__self.stft.filter_length'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.667450Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/stft/padding/Constant_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.667596Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/stft/padding/Reshape_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.667746Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__decoder.rnn.weight_hh'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.667892Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/stft/padding/Constant_1_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.667922Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/stft/padding/Constant_5_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.667945Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/stft/padding/Constant_3_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.668203Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn_1/Slice_1_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.668358Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn_1/Concat_2_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.668506Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn_1/Slice_4_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.668620Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn_1/Constant_26_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.668794Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn_1/Constant_22_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.668942Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn_1/Constant_21_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.669108Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn_1/Constant_44_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.669268Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn_1/Constant_19_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.669414Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn_1/Constant_17_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.669569Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn_1/Constant_14_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.669719Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn_1/Constant_13_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.669882Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn_1/Slice_3_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.670065Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn_1/Slice_8_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.670221Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn_1/Constant_12_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.670376Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn_1/Slice_11_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.670512Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn_1/Constant_24_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.670654Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__250'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.670802Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn_1/Constant_10_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.670953Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn_1/Constant_20_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.671100Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn_1/Slice_10_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.671246Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn_1/Constant_7_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.671397Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn_1/Constant_9_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.671545Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn_1/Constant_27_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.671690Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn_1/Constant_23_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.671839Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn_1/Constant_43_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.671990Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn_1/Constant_18_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.672147Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn_1/Constant_6_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.672298Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn_1/Constant_25_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.672441Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn_1/Slice_2_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.672585Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn_1/Constant_8_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.672732Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn_1/Constant_28_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.672873Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn_1/Constant_40_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.673021Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn_1/Slice_7_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.673228Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn_1/Constant_11_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.673393Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn_1/Constant_32_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.673488Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn_1/Constant_15_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.673625Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn_1/Constant_29_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.673654Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn_1/Constant_30_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.673678Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn_1/Constant_39_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.673701Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn_1/Constant_31_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.673723Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn_1/Constant_33_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.673745Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn_1/Concat_1_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.673768Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn_1/Constant_34_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.673790Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn_1/Constant_37_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.673813Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn_1/Constant_35_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.673836Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn_1/Concat_3_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.673858Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn_1/Slice_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.673880Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn_1/Constant_36_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.673902Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn_1/Constant_41_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.673925Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn_1/Constant_38_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.673947Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn_1/Constant_42_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.673971Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn_1/Concat_4_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.673994Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn_1/Constant_16_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.674030Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn_1/Slice_6_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.674362Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn_1/Slice_9_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.674520Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn_1/Concat_5_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.674675Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn_1/Slice_5_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.674987Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn/Slice_1_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.675210Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn/Constant_29_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.675361Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn/Slice_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.675469Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn/Constant_23_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.675619Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn/Slice_7_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.675767Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn/Concat_2_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.675910Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn/Constant_24_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.676065Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn/Constant_16_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.676222Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn/Constant_21_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.676361Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn/Constant_18_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.676391Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn/Constant_30_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.676415Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn/Slice_2_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.676437Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn/Constant_17_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.676460Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn/Concat_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.676482Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn/Constant_13_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.676507Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn/Constant_19_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.676530Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn/Constant_22_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.676564Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn/Constant_25_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.676597Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn/Constant_10_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.676620Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn/Constant_8_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.676642Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn/Constant_31_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.676664Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn/Constant_28_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.676686Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn/Constant_26_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.676709Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn/Slice_8_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.676731Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn/Constant_7_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.676754Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn/Constant_11_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.676776Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn/Constant_9_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.676798Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn/Concat_3_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.676820Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn/Constant_12_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.676843Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn/Constant_14_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.676865Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn/Constant_20_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.676887Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn/Constant_37_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.676910Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn/Slice_5_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.676952Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn/Constant_15_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.676975Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn/Constant_32_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.676997Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn/Constant_34_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.677019Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn/Constant_36_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.677434Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn/Slice_3_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.677599Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn/Constant_38_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.677756Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn/Constant_35_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.677901Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn/Constant_41_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.678067Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn/Constant_40_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.678219Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn/Constant_42_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.678372Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn/Constant_43_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.678521Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn/Constant_44_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.678676Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn/Constant_45_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.678832Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn/Slice_11_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.678976Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn/Slice_10_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.679132Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn/Constant_27_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.679285Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn/Slice_9_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.679426Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn/Constant_39_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.679577Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn/Slice_6_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.679729Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn/Concat_4_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.679839Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn/Slice_4_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.679985Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn/Constant_33_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.680150Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/decoder/rnn/Concat_1_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.680660Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer MatMulAddFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:27.681030Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer ReshapeFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:27.681239Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer FreeDimensionOverrideTransformer modified: 0 with status: OK
+[2m2026-01-30T16:56:27.681391Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer GeluFusionL1 modified: 0 with status: OK
+[2m2026-01-30T16:56:27.681493Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer LayerNormFusionL1 modified: 0 with status: OK
+[2m2026-01-30T16:56:27.681810Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer QDQPropagationTransformer modified: 0 with status: OK
+[2m2026-01-30T16:56:27.682068Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer WeightBiasQuantization modified: 0 with status: OK
+[2m2026-01-30T16:56:27.682301Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer EnsureUniqueDQForNodeUnit modified: 0 with status: OK
+[2m2026-01-30T16:56:27.682546Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer RocmBlasAltImpl modified: 0 with status: OK
+[2m2026-01-30T16:56:27.683175Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer TransposeOptimizer modified: 0 with status: OK
+[2m2026-01-30T16:56:27.683492Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer Level1_RuleBasedTransformer modified: 0 with status: OK
+[2m2026-01-30T16:56:27.683652Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer DoubleQDQPairsRemover modified: 0 with status: OK
+[2m2026-01-30T16:56:27.684315Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer CommonSubexpressionElimination modified: 0 with status: OK
+[2m2026-01-30T16:56:27.684656Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer ConstantFolding modified: 0 with status: OK
+[2m2026-01-30T16:56:27.684910Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer MatMulAddFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:27.685153Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer ReshapeFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:27.685322Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer FreeDimensionOverrideTransformer modified: 0 with status: OK
+[2m2026-01-30T16:56:27.685417Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer GeluFusionL1 modified: 0 with status: OK
+[2m2026-01-30T16:56:27.685439Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer LayerNormFusionL1 modified: 0 with status: OK
+[2m2026-01-30T16:56:27.685560Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer QDQPropagationTransformer modified: 0 with status: OK
+[2m2026-01-30T16:56:27.685671Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer WeightBiasQuantization modified: 0 with status: OK
+[2m2026-01-30T16:56:27.685771Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer EnsureUniqueDQForNodeUnit modified: 0 with status: OK
+[2m2026-01-30T16:56:27.685865Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer RocmBlasAltImpl modified: 0 with status: OK
+[2m2026-01-30T16:56:27.688948Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Running graph optimizations in loop 1 time/s (Graph Optimizations Loop Level : 1)
+[2m2026-01-30T16:56:27.689636Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer Level2_RuleBasedTransformer modified: 0 with status: OK
+[2m2026-01-30T16:56:27.690314Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer TransposeOptimizer_CPUExecutionProvider modified: 0 with status: OK
+[2m2026-01-30T16:56:27.690605Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer QDQS8ToU8Transformer modified: 0 with status: OK
+[2m2026-01-30T16:56:27.690935Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer QDQSelectorActionTransformer modified: 0 with status: OK
+[2m2026-01-30T16:56:27.691149Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer GemmActivationFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:27.691436Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer MatMulIntegerToFloatFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:27.691694Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer DynamicQuantizeMatMulFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:27.692291Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer ConvActivationFusion modified: 1 with status: OK
+[2m2026-01-30T16:56:27.701937Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer GeluFusionL2 modified: 0 with status: OK
+[2m2026-01-30T16:56:27.702431Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer LayerNormFusionL2 modified: 0 with status: OK
+[2m2026-01-30T16:56:27.702713Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer SimplifiedLayerNormFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:27.702968Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer AttentionFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:27.703230Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer EmbedLayerNormFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:27.703716Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer GatherSliceToSplitFusion modified: 1 with status: OK
+[2m2026-01-30T16:56:27.712610Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/stft/Constant_17_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.712995Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/stft/Constant_16_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.713172Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/stft/Constant_15_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.713273Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/stft/Constant_14_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.713410Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/stft/Constant_7_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.713556Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/stft/Constant_6_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.713709Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/stft/Constant_8_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.713877Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_then_branch__Inline_0__/stft/Constant_9_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.714258Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/stft/Constant_15_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.714372Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/stft/Constant_9_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.714400Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/stft/Constant_7_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.714422Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/stft/Constant_6_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.714444Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/stft/Constant_14_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.714468Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/stft/Constant_17_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.714490Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/stft/Constant_16_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.714522Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'If_0_else_branch__Inline_0__/stft/Constant_8_output_0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.714888Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer GatherToSliceFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:27.714996Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer MatmulTransposeFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:27.715367Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer BiasGeluFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:27.715626Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer GroupQueryAttentionFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:27.715865Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer MatMulAddFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:27.716112Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer SkipLayerNormFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:27.716363Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer FastGeluFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:27.716607Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer QuickGeluFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:27.716854Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer BiasSoftmaxFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:27.717105Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer BiasDropoutFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:27.717393Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer MatMulScaleFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:27.717629Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer MatMulActivationFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:27.717907Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer MatMulNBitsFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:27.718169Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer QDQFinalCleanupTransformer modified: 0 with status: OK
+[2m2026-01-30T16:56:27.718429Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer Level2_RuleBasedTransformer modified: 0 with status: OK
+[2m2026-01-30T16:56:27.718708Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer QDQS8ToU8Transformer modified: 0 with status: OK
+[2m2026-01-30T16:56:27.718957Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer QDQSelectorActionTransformer modified: 0 with status: OK
+[2m2026-01-30T16:56:27.719213Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer GemmActivationFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:27.719465Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer MatMulIntegerToFloatFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:27.719722Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer DynamicQuantizeMatMulFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:27.720018Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer ConvActivationFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:27.720253Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer GeluFusionL2 modified: 0 with status: OK
+[2m2026-01-30T16:56:27.720365Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer LayerNormFusionL2 modified: 0 with status: OK
+[2m2026-01-30T16:56:27.720464Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer SimplifiedLayerNormFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:27.720558Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer AttentionFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:27.720652Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer EmbedLayerNormFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:27.720858Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer GatherSliceToSplitFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:27.720963Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer GatherToSliceFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:27.721259Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer MatmulTransposeFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:27.721507Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer BiasGeluFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:27.721733Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer GroupQueryAttentionFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:27.721979Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer MatMulAddFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:27.722257Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer SkipLayerNormFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:27.722509Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer FastGeluFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:27.722755Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer QuickGeluFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:27.722994Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer BiasSoftmaxFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:27.723204Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer BiasDropoutFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:27.723488Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer MatMulScaleFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:27.723723Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer MatMulActivationFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:27.723976Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer MatMulNBitsFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:27.724220Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer QDQFinalCleanupTransformer modified: 0 with status: OK
+[2m2026-01-30T16:56:27.724488Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer NchwcTransformer modified: 0 with status: OK
+[2m2026-01-30T16:56:27.725116Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer NhwcTransformer modified: 0 with status: OK
+[2m2026-01-30T16:56:27.725423Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer ConvAddActivationFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:27.725732Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer RemoveDuplicateCastTransformer modified: 0 with status: OK
+[2m2026-01-30T16:56:27.725757Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer CastFloat16Transformer modified: 0 with status: OK
+[2m2026-01-30T16:56:27.725783Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer MemcpyTransformer modified: 0 with status: OK
+[2m2026-01-30T16:56:27.728292Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Use DeviceBasedPartition as default
+[2m2026-01-30T16:56:27.728940Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Saving initialized tensors.
+[2m2026-01-30T16:56:27.729235Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Extending BFCArena for Cpu. bin_num:0 (requested) num_bytes: 8 (actual) rounded_bytes:256
+[2m2026-01-30T16:56:27.729422Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Extended allocation by 1048576 bytes.
+[2m2026-01-30T16:56:27.729514Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Total allocated bytes: 1048576
+[2m2026-01-30T16:56:27.729535Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Allocated memory at 0x560155bf0280 to 0x560155cf0280
+[2m2026-01-30T16:56:27.729584Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Done saving initialized tensors
+[2m2026-01-30T16:56:27.731309Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Use DeviceBasedPartition as default
+[2m2026-01-30T16:56:27.732098Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Saving initialized tensors.
+[2m2026-01-30T16:56:27.732395Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Done saving initialized tensors
+[2m2026-01-30T16:56:27.732971Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Use DeviceBasedPartition as default
+[2m2026-01-30T16:56:27.733200Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Saving initialized tensors.
+[2m2026-01-30T16:56:27.733373Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Done saving initialized tensors
+[2m2026-01-30T16:56:27.733543Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Use DeviceBasedPartition as default
+[2m2026-01-30T16:56:27.733711Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Saving initialized tensors.
+[2m2026-01-30T16:56:27.733872Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Done saving initialized tensors
+[2m2026-01-30T16:56:27.734257Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Use DeviceBasedPartition as default
+[2m2026-01-30T16:56:27.734596Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Saving initialized tensors.
+[2m2026-01-30T16:56:27.734819Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Done saving initialized tensors
+[2m2026-01-30T16:56:27.735090Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Reserving memory in BFCArena for Cpu size: 262144
+[2m2026-01-30T16:56:27.735508Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Reserving memory in BFCArena for Cpu size: 262144
+[2m2026-01-30T16:56:27.735941Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Use DeviceBasedPartition as default
+[2m2026-01-30T16:56:27.736211Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Saving initialized tensors.
+[2m2026-01-30T16:56:27.736393Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Done saving initialized tensors
+[2m2026-01-30T16:56:27.736609Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Use DeviceBasedPartition as default
+[2m2026-01-30T16:56:27.736824Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Saving initialized tensors.
+[2m2026-01-30T16:56:27.736984Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Done saving initialized tensors
+[2m2026-01-30T16:56:27.737141Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Use DeviceBasedPartition as default
+[2m2026-01-30T16:56:27.737183Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Saving initialized tensors.
+[2m2026-01-30T16:56:27.737206Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Done saving initialized tensors
+[2m2026-01-30T16:56:27.737246Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Use DeviceBasedPartition as default
+[2m2026-01-30T16:56:27.737279Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Saving initialized tensors.
+[2m2026-01-30T16:56:27.737308Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Done saving initialized tensors
+[2m2026-01-30T16:56:27.737344Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Use DeviceBasedPartition as default
+[2m2026-01-30T16:56:27.737373Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Saving initialized tensors.
+[2m2026-01-30T16:56:27.737392Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Done saving initialized tensors
+[2m2026-01-30T16:56:27.737439Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Use DeviceBasedPartition as default
+[2m2026-01-30T16:56:27.737476Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Saving initialized tensors.
+[2m2026-01-30T16:56:27.737496Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Done saving initialized tensors
+[2m2026-01-30T16:56:27.737544Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Use DeviceBasedPartition as default
+[2m2026-01-30T16:56:27.737587Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Saving initialized tensors.
+[2m2026-01-30T16:56:27.737619Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Done saving initialized tensors
+[2m2026-01-30T16:56:27.737665Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Use DeviceBasedPartition as default
+[2m2026-01-30T16:56:27.737705Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Saving initialized tensors.
+[2m2026-01-30T16:56:27.737736Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Done saving initialized tensors
+[2m2026-01-30T16:56:27.737785Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Use DeviceBasedPartition as default
+[2m2026-01-30T16:56:27.737819Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Saving initialized tensors.
+[2m2026-01-30T16:56:27.737846Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Done saving initialized tensors
+[2m2026-01-30T16:56:27.737885Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Use DeviceBasedPartition as default
+[2m2026-01-30T16:56:27.737921Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Saving initialized tensors.
+[2m2026-01-30T16:56:27.737942Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Done saving initialized tensors
+[2m2026-01-30T16:56:27.738227Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Use DeviceBasedPartition as default
+[2m2026-01-30T16:56:27.738833Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Saving initialized tensors.
+[2m2026-01-30T16:56:27.739124Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Done saving initialized tensors
+[2m2026-01-30T16:56:27.739414Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Reserving memory in BFCArena for Cpu size: 262144
+[2m2026-01-30T16:56:27.739967Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Reserving memory in BFCArena for Cpu size: 262144
+[2m2026-01-30T16:56:27.740652Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Use DeviceBasedPartition as default
+[2m2026-01-30T16:56:27.741061Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Saving initialized tensors.
+[2m2026-01-30T16:56:27.741316Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Done saving initialized tensors
+[2m2026-01-30T16:56:27.741597Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Use DeviceBasedPartition as default
+[2m2026-01-30T16:56:27.741807Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Saving initialized tensors.
+[2m2026-01-30T16:56:27.741995Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Done saving initialized tensors
+[2m2026-01-30T16:56:27.742167Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Use DeviceBasedPartition as default
+[2m2026-01-30T16:56:27.742371Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Saving initialized tensors.
+[2m2026-01-30T16:56:27.742530Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Done saving initialized tensors
+[2m2026-01-30T16:56:27.742663Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Use DeviceBasedPartition as default
+[2m2026-01-30T16:56:27.742707Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Saving initialized tensors.
+[2m2026-01-30T16:56:27.742746Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Done saving initialized tensors
+[2m2026-01-30T16:56:27.742784Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Use DeviceBasedPartition as default
+[2m2026-01-30T16:56:27.742814Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Saving initialized tensors.
+[2m2026-01-30T16:56:27.742832Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Done saving initialized tensors
+[2m2026-01-30T16:56:27.742875Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Use DeviceBasedPartition as default
+[2m2026-01-30T16:56:27.742908Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Saving initialized tensors.
+[2m2026-01-30T16:56:27.742926Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Done saving initialized tensors
+[2m2026-01-30T16:56:27.742965Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Use DeviceBasedPartition as default
+[2m2026-01-30T16:56:27.742996Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Saving initialized tensors.
+[2m2026-01-30T16:56:27.743022Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Done saving initialized tensors
+[2m2026-01-30T16:56:27.743303Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Use DeviceBasedPartition as default
+[2m2026-01-30T16:56:27.743481Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Saving initialized tensors.
+[2m2026-01-30T16:56:27.743632Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Done saving initialized tensors
+[2m2026-01-30T16:56:27.743833Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Use DeviceBasedPartition as default
+[2m2026-01-30T16:56:27.744034Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Saving initialized tensors.
+[2m2026-01-30T16:56:27.744225Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Done saving initialized tensors
+[2m2026-01-30T16:56:27.744401Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Use DeviceBasedPartition as default
+[2m2026-01-30T16:56:27.744588Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Saving initialized tensors.
+[2m2026-01-30T16:56:27.744683Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Done saving initialized tensors
+[2m2026-01-30T16:56:27.744871Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Use DeviceBasedPartition as default
+[2m2026-01-30T16:56:27.745505Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Saving initialized tensors.
+[2m2026-01-30T16:56:27.745777Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Done saving initialized tensors
+[2m2026-01-30T16:56:27.746386Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Use DeviceBasedPartition as default
+[2m2026-01-30T16:56:27.746685Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Saving initialized tensors.
+[2m2026-01-30T16:56:27.746888Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Done saving initialized tensors
+[2m2026-01-30T16:56:27.747117Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Use DeviceBasedPartition as default
+[2m2026-01-30T16:56:27.747232Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Saving initialized tensors.
+[2m2026-01-30T16:56:27.747255Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Done saving initialized tensors
+[2m2026-01-30T16:56:27.747564Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Use DeviceBasedPartition as default
+[2m2026-01-30T16:56:27.747814Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Saving initialized tensors.
+[2m2026-01-30T16:56:27.747906Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Done saving initialized tensors
+[2m2026-01-30T16:56:27.748431Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Reserving memory in BFCArena for Cpu size: 262144
+[2m2026-01-30T16:56:27.748901Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Reserving memory in BFCArena for Cpu size: 262144
+[2m2026-01-30T16:56:27.749538Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Use DeviceBasedPartition as default
+[2m2026-01-30T16:56:27.749923Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Saving initialized tensors.
+[2m2026-01-30T16:56:27.750138Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Done saving initialized tensors
+[2m2026-01-30T16:56:27.750371Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Use DeviceBasedPartition as default
+[2m2026-01-30T16:56:27.750538Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Saving initialized tensors.
+[2m2026-01-30T16:56:27.750709Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Done saving initialized tensors
+[2m2026-01-30T16:56:27.750891Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Use DeviceBasedPartition as default
+[2m2026-01-30T16:56:27.753015Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Saving initialized tensors.
+[2m2026-01-30T16:56:27.753246Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Done saving initialized tensors
+[2m2026-01-30T16:56:27.753374Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Use DeviceBasedPartition as default
+[2m2026-01-30T16:56:27.753560Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Saving initialized tensors.
+[2m2026-01-30T16:56:27.753715Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Done saving initialized tensors
+[2m2026-01-30T16:56:27.753887Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Use DeviceBasedPartition as default
+[2m2026-01-30T16:56:27.754086Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Saving initialized tensors.
+[2m2026-01-30T16:56:27.754236Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Done saving initialized tensors
+[2m2026-01-30T16:56:27.754371Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Use DeviceBasedPartition as default
+[2m2026-01-30T16:56:27.754421Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Saving initialized tensors.
+[2m2026-01-30T16:56:27.754448Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Done saving initialized tensors
+[2m2026-01-30T16:56:27.754492Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Use DeviceBasedPartition as default
+[2m2026-01-30T16:56:27.754529Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Saving initialized tensors.
+[2m2026-01-30T16:56:27.754563Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Done saving initialized tensors
+[2m2026-01-30T16:56:27.754605Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Use DeviceBasedPartition as default
+[2m2026-01-30T16:56:27.754639Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Saving initialized tensors.
+[2m2026-01-30T16:56:27.754657Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Done saving initialized tensors
+[2m2026-01-30T16:56:27.754693Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Use DeviceBasedPartition as default
+[2m2026-01-30T16:56:27.754724Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Saving initialized tensors.
+[2m2026-01-30T16:56:27.754749Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Done saving initialized tensors
+[2m2026-01-30T16:56:27.754783Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Use DeviceBasedPartition as default
+[2m2026-01-30T16:56:27.754811Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Saving initialized tensors.
+[2m2026-01-30T16:56:27.754828Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Done saving initialized tensors
+[2m2026-01-30T16:56:27.754939Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Use DeviceBasedPartition as default
+[2m2026-01-30T16:56:27.756398Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Saving initialized tensors.
+[2m2026-01-30T16:56:27.756553Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Done saving initialized tensors
+[2m2026-01-30T16:56:27.756910Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Reserving memory in BFCArena for Cpu size: 262144
+[2m2026-01-30T16:56:27.757347Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Reserving memory in BFCArena for Cpu size: 262144
+[2m2026-01-30T16:56:27.757777Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Use DeviceBasedPartition as default
+[2m2026-01-30T16:56:27.757948Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Saving initialized tensors.
+[2m2026-01-30T16:56:27.758015Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Done saving initialized tensors
+[2m2026-01-30T16:56:27.758130Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Use DeviceBasedPartition as default
+[2m2026-01-30T16:56:27.758180Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Saving initialized tensors.
+[2m2026-01-30T16:56:27.758211Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Done saving initialized tensors
+[2m2026-01-30T16:56:27.758258Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Use DeviceBasedPartition as default
+[2m2026-01-30T16:56:27.758294Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Saving initialized tensors.
+[2m2026-01-30T16:56:27.758315Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Done saving initialized tensors
+[2m2026-01-30T16:56:27.758359Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Use DeviceBasedPartition as default
+[2m2026-01-30T16:56:27.758396Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Saving initialized tensors.
+[2m2026-01-30T16:56:27.758425Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Done saving initialized tensors
+[2m2026-01-30T16:56:27.758467Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Use DeviceBasedPartition as default
+[2m2026-01-30T16:56:27.758502Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Saving initialized tensors.
+[2m2026-01-30T16:56:27.758524Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Done saving initialized tensors
+[2m2026-01-30T16:56:27.758579Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Use DeviceBasedPartition as default
+[2m2026-01-30T16:56:27.758623Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Saving initialized tensors.
+[2m2026-01-30T16:56:27.758660Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Done saving initialized tensors
+[2m2026-01-30T16:56:27.758730Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Use DeviceBasedPartition as default
+[2m2026-01-30T16:56:27.758783Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Saving initialized tensors.
+[2m2026-01-30T16:56:27.758826Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Done saving initialized tensors
+[2m2026-01-30T16:56:27.758875Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Use DeviceBasedPartition as default
+[2m2026-01-30T16:56:27.758922Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Saving initialized tensors.
+[2m2026-01-30T16:56:27.758953Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Done saving initialized tensors
+[2m2026-01-30T16:56:27.759024Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Use DeviceBasedPartition as default
+[2m2026-01-30T16:56:27.759321Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Saving initialized tensors.
+[2m2026-01-30T16:56:27.759382Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Done saving initialized tensors
+[2m2026-01-30T16:56:27.759439Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Use DeviceBasedPartition as default
+[2m2026-01-30T16:56:27.759475Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Saving initialized tensors.
+[2m2026-01-30T16:56:27.759495Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Done saving initialized tensors
+[2m2026-01-30T16:56:27.759693Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Session successfully initialized.
+[2m2026-01-30T16:56:27.759882Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Session Options {  execution_mode:0 execution_order:DEFAULT enable_profiling:0 optimized_model_filepath:"" enable_mem_pattern:1 enable_mem_reuse:1 enable_cpu_mem_arena:1 profile_file_prefix:onnxruntime_profile_ session_logid: session_log_severity_level:-1 session_log_verbosity_level:0 max_num_graph_transformation_steps:10 graph_optimization_level:3 intra_op_param:OrtThreadPoolParams { thread_pool_size: 4 auto_set_affinity: 0 allow_spinning: 0 dynamic_block_base_: 0 stack_size: 0 affinity_str:  set_denormal_as_zero: 0 } inter_op_param:OrtThreadPoolParams { thread_pool_size: 0 auto_set_affinity: 0 allow_spinning: 0 dynamic_block_base_: 0 stack_size: 0 affinity_str:  set_denormal_as_zero: 0 } use_per_session_threads:1 thread_pool_allow_spinning:1 use_deterministic_compute:0 ep_selection_policy:0 config_options: {  } }
+[2m2026-01-30T16:56:27.759995Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Creating and using per session threadpools since use_per_session_threads_ is true
+[2m2026-01-30T16:56:27.760025Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Dynamic block base set to 0
+[2m2026-01-30T16:56:27.781367Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Initializing session.
+[2m2026-01-30T16:56:27.781691Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Adding default CPU execution provider.
+[2m2026-01-30T16:56:27.781853Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Creating BFCArena for Cpu with following configs: initial_chunk_size_bytes: 1048576 max_dead_bytes_per_chunk: 134217728 initial_growth_chunk_size_bytes: 2097152 max_power_of_two_extend_bytes: 1073741824 memory limit: 18446744073709551615 arena_extend_strategy: 0
+[2m2026-01-30T16:56:27.782283Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m This model does not have any local functions defined. AOT Inlining is not performed
+[2m2026-01-30T16:56:27.782988Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer EnsureUniqueDQForNodeUnit modified: 0 with status: OK
+[2m2026-01-30T16:56:27.783899Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer Level1_RuleBasedTransformer modified: 0 with status: OK
+[2m2026-01-30T16:56:27.784473Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer DoubleQDQPairsRemover modified: 0 with status: OK
+[2m2026-01-30T16:56:27.785340Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer ConstantSharing modified: 0 with status: OK
+[2m2026-01-30T16:56:27.786921Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer CommonSubexpressionElimination modified: 0 with status: OK
+[2m2026-01-30T16:56:27.795351Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer ConstantFolding modified: 1 with status: OK
+[2m2026-01-30T16:56:27.801406Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'val_25'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.801470Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'conv_time.band_pass'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.803444Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer MatMulAddFusion modified: 1 with status: OK
+[2m2026-01-30T16:56:27.809820Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer ReshapeFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:27.809922Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer FreeDimensionOverrideTransformer modified: 0 with status: OK
+[2m2026-01-30T16:56:27.809951Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer GeluFusionL1 modified: 0 with status: OK
+[2m2026-01-30T16:56:27.810206Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer LayerNormFusionL1 modified: 0 with status: OK
+[2m2026-01-30T16:56:27.810444Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer QDQPropagationTransformer modified: 0 with status: OK
+[2m2026-01-30T16:56:27.810722Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer WeightBiasQuantization modified: 0 with status: OK
+[2m2026-01-30T16:56:27.810965Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer EnsureUniqueDQForNodeUnit modified: 0 with status: OK
+[2m2026-01-30T16:56:27.811200Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer RocmBlasAltImpl modified: 0 with status: OK
+[2m2026-01-30T16:56:27.814618Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer TransposeOptimizer modified: 1 with status: OK
+[2m2026-01-30T16:56:27.822406Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing NodeArg 'Transpose_token_279_out0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.822488Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing NodeArg 'Transpose_token_276_out0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.822513Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing NodeArg 'Transpose_token_274_out0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.822537Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing NodeArg 'Transpose_token_272_out0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.822559Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing NodeArg 'Transpose_token_271_out0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.822581Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing NodeArg 'Transpose_token_266_out0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.822604Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing NodeArg 'Transpose_token_264_out0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.822630Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing NodeArg 'Transpose_token_261_out0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.822654Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing NodeArg 'Transpose_token_257_out0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.822687Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing NodeArg 'Transpose_token_254_out0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.822710Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing NodeArg 'Transpose_token_251_out0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.822732Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing NodeArg 'Transpose_token_249_out0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.822756Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing NodeArg 'Transpose_token_247_out0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.822786Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing NodeArg 'Transpose_token_256_out0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.822818Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing NodeArg 'Transpose_token_246_out0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.822839Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing NodeArg 'Transpose_token_242_out0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.822861Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing NodeArg 'Transpose_token_241_out0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.822882Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing NodeArg 'Transpose_token_239_out0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.822904Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing NodeArg 'Transpose_token_237_out0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.822925Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing NodeArg 'Transpose_token_269_out0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.822947Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing NodeArg 'Transpose_token_227_out0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.822969Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing NodeArg 'Transpose_token_262_out0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.822992Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing NodeArg 'Transpose_token_231_out0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.823017Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing NodeArg 'Transpose_token_232_out0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.823118Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing NodeArg 'Transpose_token_252_out0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.823151Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing NodeArg 'Transpose_token_277_out0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.823175Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing NodeArg 'Transpose_token_259_out0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.823205Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing NodeArg 'Transpose_token_236_out0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.823227Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing NodeArg 'Transpose_token_229_out0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.823271Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing NodeArg 'Transpose_token_267_out0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.823318Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing NodeArg 'Transpose_out0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.823350Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing NodeArg 'Transpose_token_222_out0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.823380Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing NodeArg 'Transpose_token_244_out0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.823401Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing NodeArg 'Transpose_token_226_out0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.823427Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing NodeArg 'Transpose_token_234_out0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.823460Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing NodeArg 'Transpose_token_224_out0'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.824313Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer Level1_RuleBasedTransformer modified: 0 with status: OK
+[2m2026-01-30T16:56:27.824580Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer DoubleQDQPairsRemover modified: 0 with status: OK
+[2m2026-01-30T16:56:27.825910Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer CommonSubexpressionElimination modified: 0 with status: OK
+[2m2026-01-30T16:56:27.826649Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer ConstantFolding modified: 0 with status: OK
+[2m2026-01-30T16:56:27.826978Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer MatMulAddFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:27.827331Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer ReshapeFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:27.827397Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer FreeDimensionOverrideTransformer modified: 0 with status: OK
+[2m2026-01-30T16:56:27.827434Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer GeluFusionL1 modified: 0 with status: OK
+[2m2026-01-30T16:56:27.827676Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer LayerNormFusionL1 modified: 0 with status: OK
+[2m2026-01-30T16:56:27.827923Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer QDQPropagationTransformer modified: 0 with status: OK
+[2m2026-01-30T16:56:27.828231Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer WeightBiasQuantization modified: 0 with status: OK
+[2m2026-01-30T16:56:27.828454Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer EnsureUniqueDQForNodeUnit modified: 0 with status: OK
+[2m2026-01-30T16:56:27.828648Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer RocmBlasAltImpl modified: 0 with status: OK
+[2m2026-01-30T16:56:27.832896Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Running graph optimizations in loop 1 time/s (Graph Optimizations Loop Level : 1)
+[2m2026-01-30T16:56:27.833338Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer Level2_RuleBasedTransformer modified: 0 with status: OK
+[2m2026-01-30T16:56:27.834764Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer TransposeOptimizer_CPUExecutionProvider modified: 0 with status: OK
+[2m2026-01-30T16:56:27.835171Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer QDQS8ToU8Transformer modified: 0 with status: OK
+[2m2026-01-30T16:56:27.835791Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer QDQSelectorActionTransformer modified: 0 with status: OK
+[2m2026-01-30T16:56:27.836368Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer GemmActivationFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:27.836946Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer MatMulIntegerToFloatFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:27.837595Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer DynamicQuantizeMatMulFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:27.838352Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer ConvActivationFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:27.838732Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer GeluFusionL2 modified: 0 with status: OK
+[2m2026-01-30T16:56:27.838766Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer LayerNormFusionL2 modified: 0 with status: OK
+[2m2026-01-30T16:56:27.839020Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer SimplifiedLayerNormFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:27.839239Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer AttentionFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:27.839466Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer EmbedLayerNormFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:27.840575Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer GatherSliceToSplitFusion modified: 1 with status: OK
+[2m2026-01-30T16:56:27.848105Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'val_554'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.848203Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'val_958'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.848778Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer GatherToSliceFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:27.849141Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer MatmulTransposeFusion modified: 1 with status: OK
+[2m2026-01-30T16:56:27.854393Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer BiasGeluFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:27.854973Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer GroupQueryAttentionFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:27.855506Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer MatMulAddFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:27.855851Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer SkipLayerNormFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:27.856157Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer FastGeluFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:27.856347Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer QuickGeluFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:27.856517Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer BiasSoftmaxFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:27.856664Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer BiasDropoutFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:27.856920Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer MatMulScaleFusion modified: 1 with status: OK
+[2m2026-01-30T16:56:27.864067Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'val_109'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.864728Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer MatMulActivationFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:27.864992Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer MatMulNBitsFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:27.865151Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer QDQFinalCleanupTransformer modified: 0 with status: OK
+[2m2026-01-30T16:56:27.865289Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer Level2_RuleBasedTransformer modified: 0 with status: OK
+[2m2026-01-30T16:56:27.865444Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer QDQS8ToU8Transformer modified: 0 with status: OK
+[2m2026-01-30T16:56:27.865780Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer QDQSelectorActionTransformer modified: 0 with status: OK
+[2m2026-01-30T16:56:27.865926Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer GemmActivationFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:27.866085Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer MatMulIntegerToFloatFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:27.866209Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer DynamicQuantizeMatMulFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:27.866377Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer ConvActivationFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:27.866518Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer GeluFusionL2 modified: 0 with status: OK
+[2m2026-01-30T16:56:27.866537Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer LayerNormFusionL2 modified: 0 with status: OK
+[2m2026-01-30T16:56:27.866654Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer SimplifiedLayerNormFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:27.866767Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer AttentionFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:27.866882Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer EmbedLayerNormFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:27.867245Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer GatherSliceToSplitFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:27.867386Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer GatherToSliceFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:27.867557Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer MatmulTransposeFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:27.867698Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer BiasGeluFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:27.867815Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer GroupQueryAttentionFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:27.868031Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer MatMulAddFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:27.868249Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer SkipLayerNormFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:27.868483Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer FastGeluFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:27.868842Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer QuickGeluFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:27.869233Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer BiasSoftmaxFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:27.869475Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer BiasDropoutFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:27.869667Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer MatMulScaleFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:27.869855Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer MatMulActivationFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:27.870112Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer MatMulNBitsFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:27.870329Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer QDQFinalCleanupTransformer modified: 0 with status: OK
+[2m2026-01-30T16:56:27.873147Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer NchwcTransformer modified: 1 with status: OK
+[2m2026-01-30T16:56:27.881751Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'encoder.3.0.conv2.weight'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.881834Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'encoder.2.0.conv2.weight'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.881864Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'encoder.1.0.conv2.weight'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.881904Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'encoder.1.0.conv1.weight'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.881956Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'encoder.4.0.conv1.weight'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.882007Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'encoder.5.0.conv2.weight'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.882063Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'encoder.2.0.conv_downsample.weight'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.882102Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'encoder.0.0.conv2.weight'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.882135Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'encoder.0.0.conv_downsample.weight'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.882170Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'encoder.2.0.conv1.weight'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.882208Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'encoder.0.0.conv1.weight'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.882245Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'encoder.4.0.conv2.weight'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.882290Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'encoder.3.0.conv1.weight'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.882367Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Removing initializer 'encoder.5.0.conv1.weight'. It is no longer used by any node.
+[2m2026-01-30T16:56:27.883718Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer NhwcTransformer modified: 0 with status: OK
+[2m2026-01-30T16:56:27.884296Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer ConvAddActivationFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:27.884754Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer NchwcTransformer modified: 0 with status: OK
+[2m2026-01-30T16:56:27.886002Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer NhwcTransformer modified: 0 with status: OK
+[2m2026-01-30T16:56:27.886625Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer ConvAddActivationFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:27.887544Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer RemoveDuplicateCastTransformer modified: 0 with status: OK
+[2m2026-01-30T16:56:27.887605Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer CastFloat16Transformer modified: 0 with status: OK
+[2m2026-01-30T16:56:27.887642Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer MemcpyTransformer modified: 0 with status: OK
+[2m2026-01-30T16:56:27.891027Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Use DeviceBasedPartition as default
+[2m2026-01-30T16:56:27.913172Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Saving initialized tensors.
+[2m2026-01-30T16:56:27.913626Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Extending BFCArena for Cpu. bin_num:0 (requested) num_bytes: 8 (actual) rounded_bytes:256
+[2m2026-01-30T16:56:27.913711Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Extended allocation by 1048576 bytes.
+[2m2026-01-30T16:56:27.913743Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Total allocated bytes: 1048576
+[2m2026-01-30T16:56:27.913759Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Allocated memory at 0x560155f1b640 to 0x56015601b640
+[2m2026-01-30T16:56:27.915705Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Done saving initialized tensors
+[2m2026-01-30T16:56:27.917546Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Reserving memory in BFCArena for Cpu size: 16384
+[2m2026-01-30T16:56:27.917763Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Reserving memory in BFCArena for Cpu size: 16384
+[2m2026-01-30T16:56:27.917857Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Reserving memory in BFCArena for Cpu size: 4096
+[2m2026-01-30T16:56:27.917919Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Reserving memory in BFCArena for Cpu size: 2048
+[2m2026-01-30T16:56:27.917965Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Reserving memory in BFCArena for Cpu size: 2048
+[2m2026-01-30T16:56:27.918014Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Reserving memory in BFCArena for Cpu size: 2048
+[2m2026-01-30T16:56:27.918079Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Reserving memory in BFCArena for Cpu size: 2048
+[2m2026-01-30T16:56:27.918169Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Reserving memory in BFCArena for Cpu size: 2048
+[2m2026-01-30T16:56:27.918220Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Reserving memory in BFCArena for Cpu size: 2048
+[2m2026-01-30T16:56:27.918263Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Reserving memory in BFCArena for Cpu size: 2048
+[2m2026-01-30T16:56:27.918292Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Reserving memory in BFCArena for Cpu size: 2048
+[2m2026-01-30T16:56:27.918347Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Reserving memory in BFCArena for Cpu size: 2048
+[2m2026-01-30T16:56:27.918376Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Reserving memory in BFCArena for Cpu size: 2048
+[2m2026-01-30T16:56:27.918418Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Reserving memory in BFCArena for Cpu size: 2048
+[2m2026-01-30T16:56:27.918455Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Reserving memory in BFCArena for Cpu size: 2048
+[2m2026-01-30T16:56:27.918516Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Reserving memory in BFCArena for Cpu size: 2048
+[2m2026-01-30T16:56:27.918567Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Reserving memory in BFCArena for Cpu size: 2048
+[2m2026-01-30T16:56:27.918617Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Reserving memory in BFCArena for Cpu size: 2048
+[2m2026-01-30T16:56:27.918658Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Reserving memory in BFCArena for Cpu size: 2048
+[2m2026-01-30T16:56:27.918734Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Reserving memory in BFCArena for Cpu size: 10240
+[2m2026-01-30T16:56:27.918805Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Reserving memory in BFCArena for Cpu size: 16384
+[2m2026-01-30T16:56:27.918878Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Reserving memory in BFCArena for Cpu size: 16384
+[2m2026-01-30T16:56:27.918945Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Reserving memory in BFCArena for Cpu size: 16384
+[2m2026-01-30T16:56:27.919017Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Reserving memory in BFCArena for Cpu size: 4096
+[2m2026-01-30T16:56:27.919080Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Reserving memory in BFCArena for Cpu size: 16384
+[2m2026-01-30T16:56:27.919170Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Reserving memory in BFCArena for Cpu size: 16384
+[2m2026-01-30T16:56:27.919241Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Reserving memory in BFCArena for Cpu size: 8192
+[2m2026-01-30T16:56:27.919304Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Reserving memory in BFCArena for Cpu size: 8192
+[2m2026-01-30T16:56:27.919362Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Reserving memory in BFCArena for Cpu size: 4096
+[2m2026-01-30T16:56:27.919417Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Reserving memory in BFCArena for Cpu size: 8192
+[2m2026-01-30T16:56:27.919472Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Reserving memory in BFCArena for Cpu size: 8192
+[2m2026-01-30T16:56:27.919533Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Reserving memory in BFCArena for Cpu size: 8192
+[2m2026-01-30T16:56:27.919676Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Reserving memory in BFCArena for Cpu size: 2048
+[2m2026-01-30T16:56:27.919774Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Reserving memory in BFCArena for Cpu size: 4096
+[2m2026-01-30T16:56:27.919888Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Reserving memory in BFCArena for Cpu size: 2048
+[2m2026-01-30T16:56:27.919978Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Reserving memory in BFCArena for Cpu size: 4096
+[2m2026-01-30T16:56:27.920070Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Reserving memory in BFCArena for Cpu size: 4096
+[2m2026-01-30T16:56:27.920131Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Reserving memory in BFCArena for Cpu size: 4096
+[2m2026-01-30T16:56:27.920197Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Reserving memory in BFCArena for Cpu size: 16384
+[2m2026-01-30T16:56:27.920272Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Reserving memory in BFCArena for Cpu size: 16384
+[2m2026-01-30T16:56:27.920341Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Reserving memory in BFCArena for Cpu size: 8192
+[2m2026-01-30T16:56:27.920414Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Reserving memory in BFCArena for Cpu size: 8192
+[2m2026-01-30T16:56:27.920482Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Reserving memory in BFCArena for Cpu size: 4096
+[2m2026-01-30T16:56:27.920543Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Reserving memory in BFCArena for Cpu size: 8192
+[2m2026-01-30T16:56:27.920620Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Reserving memory in BFCArena for Cpu size: 8192
+[2m2026-01-30T16:56:27.920694Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Reserving memory in BFCArena for Cpu size: 8192
+[2m2026-01-30T16:56:27.920762Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Reserving memory in BFCArena for Cpu size: 2048
+[2m2026-01-30T16:56:27.920807Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Reserving memory in BFCArena for Cpu size: 4096
+[2m2026-01-30T16:56:27.920871Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Reserving memory in BFCArena for Cpu size: 2048
+[2m2026-01-30T16:56:27.920917Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Reserving memory in BFCArena for Cpu size: 4096
+[2m2026-01-30T16:56:27.920989Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Reserving memory in BFCArena for Cpu size: 4096
+[2m2026-01-30T16:56:27.921084Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Reserving memory in BFCArena for Cpu size: 4096
+[2m2026-01-30T16:56:27.921146Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Reserving memory in BFCArena for Cpu size: 4096
+[2m2026-01-30T16:56:27.921198Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Reserving memory in BFCArena for Cpu size: 4096
+[2m2026-01-30T16:56:27.921248Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Reserving memory in BFCArena for Cpu size: 4096
+[2m2026-01-30T16:56:27.921287Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Reserving memory in BFCArena for Cpu size: 4096
+[2m2026-01-30T16:56:27.921325Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Reserving memory in BFCArena for Cpu size: 4096
+[2m2026-01-30T16:56:27.921373Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Reserving memory in BFCArena for Cpu size: 4096
+[2m2026-01-30T16:56:27.921448Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Reserving memory in BFCArena for Cpu size: 16384
+[2m2026-01-30T16:56:27.921503Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Reserving memory in BFCArena for Cpu size: 4096
+[2m2026-01-30T16:56:27.921534Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Reserving memory in BFCArena for Cpu size: 4096
+[2m2026-01-30T16:56:27.921569Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Reserving memory in BFCArena for Cpu size: 2048
+[2m2026-01-30T16:56:27.921593Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Reserving memory in BFCArena for Cpu size: 2048
+[2m2026-01-30T16:56:27.921616Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Reserving memory in BFCArena for Cpu size: 2048
+[2m2026-01-30T16:56:27.921649Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Reserving memory in BFCArena for Cpu size: 2048
+[2m2026-01-30T16:56:27.922788Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Session successfully initialized.
+[2m2026-01-30T16:56:27.923152Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Session Options {  execution_mode:0 execution_order:DEFAULT enable_profiling:0 optimized_model_filepath:"" enable_mem_pattern:1 enable_mem_reuse:1 enable_cpu_mem_arena:1 profile_file_prefix:onnxruntime_profile_ session_logid: session_log_severity_level:-1 session_log_verbosity_level:0 max_num_graph_transformation_steps:10 graph_optimization_level:3 intra_op_param:OrtThreadPoolParams { thread_pool_size: 4 auto_set_affinity: 0 allow_spinning: 0 dynamic_block_base_: 0 stack_size: 0 affinity_str:  set_denormal_as_zero: 0 } inter_op_param:OrtThreadPoolParams { thread_pool_size: 0 auto_set_affinity: 0 allow_spinning: 0 dynamic_block_base_: 0 stack_size: 0 affinity_str:  set_denormal_as_zero: 0 } use_per_session_threads:1 thread_pool_allow_spinning:1 use_deterministic_compute:0 ep_selection_policy:0 config_options: {  } }
+[2m2026-01-30T16:56:27.923277Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Creating and using per session threadpools since use_per_session_threads_ is true
+[2m2026-01-30T16:56:27.923312Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Dynamic block base set to 0
+[2m2026-01-30T16:56:28.005548Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Initializing session.
+[2m2026-01-30T16:56:28.005636Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Adding default CPU execution provider.
+[2m2026-01-30T16:56:28.005695Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Creating BFCArena for Cpu with following configs: initial_chunk_size_bytes: 1048576 max_dead_bytes_per_chunk: 134217728 initial_growth_chunk_size_bytes: 2097152 max_power_of_two_extend_bytes: 1073741824 memory limit: 18446744073709551615 arena_extend_strategy: 0
+[2m2026-01-30T16:56:28.005933Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m This model does not have any local functions defined. AOT Inlining is not performed
+[2m2026-01-30T16:56:28.006161Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer EnsureUniqueDQForNodeUnit modified: 0 with status: OK
+[2m2026-01-30T16:56:28.006333Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer Level1_RuleBasedTransformer modified: 0 with status: OK
+[2m2026-01-30T16:56:28.006407Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer DoubleQDQPairsRemover modified: 0 with status: OK
+[2m2026-01-30T16:56:28.006634Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Total shared scalar initializer count: 8
+[2m2026-01-30T16:56:28.006666Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer ConstantSharing modified: 1 with status: OK
+[2m2026-01-30T16:56:28.011736Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer CommonSubexpressionElimination modified: 1 with status: OK
+[2m2026-01-30T16:56:28.015034Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer ConstantFolding modified: 0 with status: OK
+[2m2026-01-30T16:56:28.015215Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer MatMulAddFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:28.015300Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer ReshapeFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:28.015330Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer FreeDimensionOverrideTransformer modified: 0 with status: OK
+[2m2026-01-30T16:56:28.015354Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer GeluFusionL1 modified: 0 with status: OK
+[2m2026-01-30T16:56:28.015377Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer LayerNormFusionL1 modified: 0 with status: OK
+[2m2026-01-30T16:56:28.015474Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer QDQPropagationTransformer modified: 0 with status: OK
+[2m2026-01-30T16:56:28.015607Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer WeightBiasQuantization modified: 0 with status: OK
+[2m2026-01-30T16:56:28.015689Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer EnsureUniqueDQForNodeUnit modified: 0 with status: OK
+[2m2026-01-30T16:56:28.015758Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer RocmBlasAltImpl modified: 0 with status: OK
+[2m2026-01-30T16:56:28.016430Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer TransposeOptimizer modified: 0 with status: OK
+[2m2026-01-30T16:56:28.016754Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer Level1_RuleBasedTransformer modified: 0 with status: OK
+[2m2026-01-30T16:56:28.016848Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer DoubleQDQPairsRemover modified: 0 with status: OK
+[2m2026-01-30T16:56:28.017356Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer CommonSubexpressionElimination modified: 0 with status: OK
+[2m2026-01-30T16:56:28.017504Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer ConstantFolding modified: 0 with status: OK
+[2m2026-01-30T16:56:28.017575Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer MatMulAddFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:28.017643Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer ReshapeFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:28.017672Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer FreeDimensionOverrideTransformer modified: 0 with status: OK
+[2m2026-01-30T16:56:28.017705Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer GeluFusionL1 modified: 0 with status: OK
+[2m2026-01-30T16:56:28.017736Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer LayerNormFusionL1 modified: 0 with status: OK
+[2m2026-01-30T16:56:28.017808Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer QDQPropagationTransformer modified: 0 with status: OK
+[2m2026-01-30T16:56:28.017907Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer WeightBiasQuantization modified: 0 with status: OK
+[2m2026-01-30T16:56:28.017986Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer EnsureUniqueDQForNodeUnit modified: 0 with status: OK
+[2m2026-01-30T16:56:28.018091Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer RocmBlasAltImpl modified: 0 with status: OK
+[2m2026-01-30T16:56:28.055993Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Running graph optimizations in loop 1 time/s (Graph Optimizations Loop Level : 1)
+[2m2026-01-30T16:56:28.056230Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer Level2_RuleBasedTransformer modified: 0 with status: OK
+[2m2026-01-30T16:56:28.056547Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer TransposeOptimizer_CPUExecutionProvider modified: 0 with status: OK
+[2m2026-01-30T16:56:28.056635Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer QDQS8ToU8Transformer modified: 0 with status: OK
+[2m2026-01-30T16:56:28.056780Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer QDQSelectorActionTransformer modified: 0 with status: OK
+[2m2026-01-30T16:56:28.056917Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer GemmActivationFusion modified: 1 with status: OK
+[2m2026-01-30T16:56:28.059403Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer MatMulIntegerToFloatFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:28.059561Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer DynamicQuantizeMatMulFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:28.060100Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer ConvActivationFusion modified: 1 with status: OK
+[2m2026-01-30T16:56:28.062826Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer GeluFusionL2 modified: 0 with status: OK
+[2m2026-01-30T16:56:28.062968Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer LayerNormFusionL2 modified: 0 with status: OK
+[2m2026-01-30T16:56:28.063064Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer SimplifiedLayerNormFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:28.063138Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer AttentionFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:28.063212Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer EmbedLayerNormFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:28.063460Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer GatherSliceToSplitFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:28.063535Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer GatherToSliceFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:28.063611Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer MatmulTransposeFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:28.063701Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer BiasGeluFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:28.063769Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer GroupQueryAttentionFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:28.063839Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer MatMulAddFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:28.063908Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer SkipLayerNormFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:28.064019Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer FastGeluFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:28.064129Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer QuickGeluFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:28.064208Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer BiasSoftmaxFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:28.064280Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer BiasDropoutFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:28.064359Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer MatMulScaleFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:28.064428Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer MatMulActivationFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:28.064513Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer MatMulNBitsFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:28.064588Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer QDQFinalCleanupTransformer modified: 0 with status: OK
+[2m2026-01-30T16:56:28.064667Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer Level2_RuleBasedTransformer modified: 0 with status: OK
+[2m2026-01-30T16:56:28.064740Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer QDQS8ToU8Transformer modified: 0 with status: OK
+[2m2026-01-30T16:56:28.064866Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer QDQSelectorActionTransformer modified: 0 with status: OK
+[2m2026-01-30T16:56:28.064941Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer GemmActivationFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:28.065016Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer MatMulIntegerToFloatFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:28.065105Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer DynamicQuantizeMatMulFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:28.065198Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer ConvActivationFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:28.065275Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer GeluFusionL2 modified: 0 with status: OK
+[2m2026-01-30T16:56:28.065350Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer LayerNormFusionL2 modified: 0 with status: OK
+[2m2026-01-30T16:56:28.065459Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer SimplifiedLayerNormFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:28.065530Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer AttentionFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:28.065600Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer EmbedLayerNormFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:28.065836Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer GatherSliceToSplitFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:28.065915Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer GatherToSliceFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:28.065990Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer MatmulTransposeFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:28.066282Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer BiasGeluFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:28.066368Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer GroupQueryAttentionFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:28.066440Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer MatMulAddFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:28.066512Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer SkipLayerNormFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:28.066733Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer FastGeluFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:28.066829Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer QuickGeluFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:28.066920Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer BiasSoftmaxFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:28.066993Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer BiasDropoutFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:28.067081Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer MatMulScaleFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:28.067150Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer MatMulActivationFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:28.067239Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer MatMulNBitsFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:28.067749Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer QDQFinalCleanupTransformer modified: 0 with status: OK
+[2m2026-01-30T16:56:28.067982Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer NchwcTransformer modified: 0 with status: OK
+[2m2026-01-30T16:56:28.068274Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer NhwcTransformer modified: 0 with status: OK
+[2m2026-01-30T16:56:28.068378Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer ConvAddActivationFusion modified: 0 with status: OK
+[2m2026-01-30T16:56:28.068807Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer RemoveDuplicateCastTransformer modified: 0 with status: OK
+[2m2026-01-30T16:56:28.068854Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer CastFloat16Transformer modified: 0 with status: OK
+[2m2026-01-30T16:56:28.068887Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m GraphTransformer MemcpyTransformer modified: 0 with status: OK
+[2m2026-01-30T16:56:28.070466Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Use DeviceBasedPartition as default
+[2m2026-01-30T16:56:28.076603Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Saving initialized tensors.
+[2m2026-01-30T16:56:28.077192Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Extending BFCArena for Cpu. bin_num:0 (requested) num_bytes: 4 (actual) rounded_bytes:256
+[2m2026-01-30T16:56:28.077333Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Extended allocation by 1048576 bytes.
+[2m2026-01-30T16:56:28.077362Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Total allocated bytes: 1048576
+[2m2026-01-30T16:56:28.077382Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Allocated memory at 0x560157456480 to 0x560157556480
+[2m2026-01-30T16:56:28.077989Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Done saving initialized tensors
+[2m2026-01-30T16:56:28.078635Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Reserving memory in BFCArena for Cpu size: 2359296
+[2m2026-01-30T16:56:28.082727Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Reserving memory in BFCArena for Cpu size: 262144
+[2m2026-01-30T16:56:28.083083Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Reserving memory in BFCArena for Cpu size: 262144
+[2m2026-01-30T16:56:28.083424Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Reserving memory in BFCArena for Cpu size: 262144
+[2m2026-01-30T16:56:28.083926Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Reserving memory in BFCArena for Cpu size: 262144
+[2m2026-01-30T16:56:28.084256Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Reserving memory in BFCArena for Cpu size: 262144
+[2m2026-01-30T16:56:28.084688Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Reserving memory in BFCArena for Cpu size: 262144
+[2m2026-01-30T16:56:28.085378Z[0m [32m INFO[0m [2mort::logging[0m[2m:[0m Session successfully initialized.
+[2m2026-01-30T16:56:28.085546Z[0m [32m INFO[0m [2maudio_worker[0m[2m:[0m Audio Worker listening on 0.0.0.0:50053

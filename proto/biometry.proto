@@ -1,0 +1,234 @@
+syntax = "proto3";
+
+package biometry;
+
+service Gatekeeper {
+  // --- Пользователи ---
+  rpc RegisterUser (RegisterUserRequest) returns (IdResponse);
+  rpc AddBiometry (AddBiometryRequest) returns (Empty); // NEW
+  rpc RemoveUser (IdRequest) returns (Empty);
+  rpc ListUsers (ListUsersRequest) returns (ListUsersResponse);
+  
+  // --- Инфраструктура ---
+  rpc AddZone (AddZoneRequest) returns (IdResponse);
+  rpc ListZones (ListZonesRequest) returns (ListZonesResponse);
+  
+  rpc AddRoom (AddRoomRequest) returns (IdResponse);
+  rpc ListRooms (ListRoomsRequest) returns (ListRoomsResponse);
+  
+  rpc AddDevice (AddDeviceRequest) returns (IdResponse);
+  rpc ListDevices (ListDevicesRequest) returns (ListDevicesResponse);
+  rpc RemoveDevice (IdRequest) returns (Empty);
+
+  // --- Контроль Доступа ---
+  rpc GrantAccess (GrantAccessRequest) returns (Empty); 
+  rpc SetAccessRules (SetAccessRulesRequest) returns (Empty);
+  rpc GetUserAccess (IdRequest) returns (GetUserAccessResponse);
+
+  rpc CheckAccess (CheckAccessRequest) returns (AccessCheckResponse);
+
+  // --- Управление системой и Оборудованием ---
+  rpc GetSystemStatus (Empty) returns (SystemStatusResponse); 
+  rpc ControlService (ControlServiceRequest) returns (StatusResponse); 
+  rpc ControlDoor (ControlDoorRequest) returns (StatusResponse); 
+  rpc ScanHardware (Empty) returns (ScanHardwareResponse); 
+  
+  // --- Журнал ---
+  rpc GetLogs (GetLogsRequest) returns (GetLogsResponse);
+}
+
+service Vision {
+  rpc ProcessFace (ImageFrame) returns (BioResult);
+  rpc GetStatus (Empty) returns (ServiceStatus);
+}
+
+service Audio {
+  rpc ProcessVoice (AudioChunk) returns (BioResult);
+  rpc GetStatus (Empty) returns (ServiceStatus);
+}
+
+// --- Сообщения ---
+
+message Empty {}
+
+message IdRequest {
+  int32 id = 1;
+}
+
+message IdResponse {
+  int32 id = 1;
+}
+
+// Users
+message RegisterUserRequest {
+  string name = 1;
+  repeated bytes images = 2; // CHANGED to repeated
+  repeated bytes voices = 3; // NEW
+}
+
+message AddBiometryRequest {
+  int32 user_id = 1;
+  repeated bytes images = 2;
+  repeated bytes voices = 3;
+}
+
+message ListUsersRequest {}
+
+message User {
+  int32 id = 1;
+  string name = 2;
+}
+
+message ListUsersResponse {
+  repeated User users = 1;
+}
+
+// Infrastructure
+message AddZoneRequest {
+  string name = 1;
+}
+
+message Zone {
+  int32 id = 1;
+  string name = 2;
+}
+
+message ListZonesRequest {}
+message ListZonesResponse {
+  repeated Zone zones = 1;
+}
+
+message AddRoomRequest {
+  string name = 1;
+  int32 zone_id = 2;
+}
+
+message Room {
+  int32 id = 1;
+  int32 zone_id = 2;
+  string name = 3;
+}
+
+message ListRoomsRequest {}
+message ListRoomsResponse {
+  repeated Room rooms = 1;
+}
+
+message AddDeviceRequest {
+  string name = 1;
+  int32 room_id = 2;
+  string device_type = 3; 
+  string connection_string = 4; 
+}
+
+message Device {
+  int32 id = 1;
+  int32 room_id = 2;
+  string name = 3;
+  string device_type = 4;
+  string connection_string = 5;
+  bool is_active = 6;
+}
+
+message ListDevicesRequest {}
+message ListDevicesResponse {
+  repeated Device devices = 1;
+}
+
+// Access
+message GrantAccessRequest {
+  int32 user_id = 1;
+  int32 zone_id = 2;
+}
+
+message SetAccessRulesRequest {
+  int32 user_id = 1;
+  repeated int32 allowed_room_ids = 2; 
+}
+
+message GetUserAccessResponse {
+  repeated int32 allowed_room_ids = 1;
+}
+
+message CheckAccessRequest {
+  int32 device_id = 1;
+  bytes image = 2;
+}
+
+message AccessCheckResponse {
+  bool granted = 1;
+  string user_name = 2;
+  string message = 3;
+}
+
+// Vision & Audio
+message ImageFrame {
+  bytes content = 1;
+}
+
+message AudioChunk {
+  bytes content = 1;
+  uint32 sample_rate = 2;
+}
+
+message BioResult {
+  bool detected = 1;
+  bool is_live = 2;
+  float liveness_score = 3;
+  repeated float embedding = 4;
+  string error_msg = 5;
+  string execution_provider = 6;
+}
+
+// System Management
+message ServiceStatus {
+  bool online = 1;
+  string device = 2; // "CUDA", "CPU"
+  string message = 3; // "OK" or error details
+}
+
+message SystemStatusResponse {
+  ServiceStatus vision = 1;
+  ServiceStatus audio = 2;
+  ServiceStatus database = 3;
+  ServiceStatus gateway = 4;
+}
+
+message ControlServiceRequest {
+  string service_name = 1; 
+  string action = 2; 
+}
+
+message StatusResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message ControlDoorRequest {
+  int32 device_id = 1;
+  string command = 2; 
+}
+
+message ScanHardwareResponse {
+  repeated Device found_devices = 1; 
+}
+
+// Logs
+message GetLogsRequest {
+  int32 limit = 1;
+  int32 offset = 2;
+}
+
+message LogEntry {
+  int32 id = 1;
+  string timestamp = 2;
+  string user_name = 3;
+  string room_name = 4;
+  string zone_name = 5;
+  bool access_granted = 6;
+  string details = 7;
+}
+
+message GetLogsResponse {
+  repeated LogEntry logs = 1;
+}

@@ -1,0 +1,771 @@
+use shared::biometry::gatekeeper_server::{Gatekeeper, GatekeeperServer};
+use shared::biometry::{
+    audio_client::AudioClient,
+    vision_client::VisionClient,
+    AccessCheckResponse, AddDeviceRequest, AddRoomRequest, AddZoneRequest,
+    CheckAccessRequest, ControlDoorRequest, ControlServiceRequest, Device, Empty, GetLogsRequest,
+    GetLogsResponse, GetUserAccessResponse, GrantAccessRequest, IdRequest,
+    IdResponse, ImageFrame, ListDevicesRequest, ListDevicesResponse, ListRoomsRequest, ListRoomsResponse,
+    ListUsersRequest, ListUsersResponse, ListZonesRequest, ListZonesResponse, LogEntry,
+    RegisterUserRequest, Room, ScanHardwareResponse, ServiceStatus, SetAccessRulesRequest,
+    StatusResponse, SystemStatusResponse, User, Zone,
+};
+use sqlx::postgres::PgPoolOptions;
+use sqlx::{Pool, Postgres, Row};
+use tonic::{transport::{Server, Channel}, Request, Response, Status};
+use pgvector::Vector;
+
+// Struct to hold full processing details
+struct FaceProcessResult {
+    embedding: Vec<f32>,
+    liveness_score: f32,
+    is_live: bool,
+    provider: String,
+}
+
+
+
+pub struct GatewayService {
+    pool: Pool<Postgres>,
+    audio_channel: Channel,
+    vision_channel: Channel,
+    face_similarity_threshold: f64,
+    test_device_id: i32,
+}
+
+impl GatewayService {
+    pub fn new(pool: Pool<Postgres>, audio_channel: Channel, vision_channel: Channel, face_similarity_threshold: f64, test_device_id: i32) -> Self {
+        Self {
+            pool,
+            audio_channel,
+            vision_channel,
+            face_similarity_threshold,
+            test_device_id,
+        }
+    }
+
+    // Updated to return full details
+    async fn process_face_full(&self, image: &[u8]) -> Result<Option<FaceProcessResult>, Status> {
+        let mut client = VisionClient::new(self.vision_channel.clone());
+        let request = Request::new(ImageFrame {
+            content: image.to_vec(),
+        });
+
+        match client.process_face(request).await {
+            Ok(response) => {
+                let res = response.into_inner();
+                if res.detected && !res.embedding.is_empty() {
+                    Ok(Some(FaceProcessResult {
+                        embedding: res.embedding,
+                        liveness_score: res.liveness_score,
+                        is_live: res.is_live,
+                        provider: res.execution_provider,
+                    }))
+                } else {
+                    Ok(None)
+                }
+            },
+            Err(e) => Err(Status::internal(format!("Vision service error: {}", e))),
+        }
+    }
+
+    async fn process_voice_embedding(&self, voice: &[u8]) -> Result<Option<Vec<f32>>, Status> {
+        let mut client = AudioClient::new(self.audio_channel.clone());
+        let request = Request::new(shared::biometry::AudioChunk {
+            content: voice.to_vec(),
+            sample_rate: 16000,
+        });
+
+        match client.process_voice(request).await {
+            Ok(response) => {
+                let bio_result = response.into_inner();
+                if bio_result.detected && !bio_result.embedding.is_empty() {
+                    Ok(Some(bio_result.embedding))
+                } else {
+                    Ok(None)
+                }
+            },
+            Err(e) => Err(Status::internal(format!("Audio service error: {}", e))),
+        }
+    }
+
+    async fn log_access(
+        &self,
+        user_id: Option<i32>,
+        device_id: i32,
+        granted: bool,
+        details: &str,
+    ) {
+        let _ = sqlx::query(
+            "INSERT INTO access_logs (user_id, device_id, granted, details) VALUES ($1, $2, $3, $4)",
+        )
+        .bind(user_id)
+        .bind(device_id)
+        .bind(granted)
+        .bind(details)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| tracing::error!("Failed to write access log: {}", e));
+    }
+    async fn get_default_test_device(&self) -> Device {
+        Device {
+            id: self.test_device_id,
+            room_id: 0,
+            name: "Default Camera".to_string(),
+            device_type: "camera".to_string(),
+            connection_string: "0".to_string(), // Webcam 0
+            is_active: true,
+        }
+    }
+}
+
+#[tonic::async_trait]
+impl Gatekeeper for GatewayService {
+    // --- Пользователи ---
+    async fn register_user(
+        &self,
+        request: Request<RegisterUserRequest>,
+    ) -> Result<Response<IdResponse>, Status> {
+        let req = request.into_inner();
+
+        let mut tx = self.pool.begin().await.map_err(|e| Status::internal(e.to_string()))?;
+
+        // 1. Create User
+        let row = sqlx::query("INSERT INTO users (name) VALUES ($1) RETURNING id")
+            .bind(&req.name)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+
+        let user_id: i32 = row.try_get("id").map_err(|e| Status::internal(e.to_string()))?;
+
+        // 2. Process Images
+        for image_bytes in req.images {
+            if let Ok(Some(embedding)) = self.process_face_full(&image_bytes).await {
+                 sqlx::query(
+                    "INSERT INTO face_embeddings (user_id, embedding) VALUES ($1, $2)",
+                )
+                .bind(user_id)
+                .bind(Vector::from(embedding.embedding))
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| Status::internal(e.to_string()))?;
+            }
+        }
+
+        // 3. Process Voices
+        for voice_bytes in req.voices {
+            if let Ok(Some(embedding)) = self.process_voice_embedding(&voice_bytes).await {
+                 sqlx::query(
+                    "INSERT INTO voice_embeddings (user_id, embedding) VALUES ($1, $2)",
+                )
+                .bind(user_id)
+                .bind(Vector::from(embedding))
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| Status::internal(e.to_string()))?;
+            }
+        }
+
+        tx.commit().await.map_err(|e| Status::internal(e.to_string()))?;
+
+        Ok(Response::new(IdResponse { id: user_id }))
+    }
+
+    async fn add_biometry(
+        &self,
+        request: Request<shared::biometry::AddBiometryRequest>,
+    ) -> Result<Response<Empty>, Status> {
+        let req = request.into_inner();
+        let user_id = req.user_id;
+
+        let mut tx = self.pool.begin().await.map_err(|e| Status::internal(e.to_string()))?;
+
+        // Process Images
+        for image_bytes in req.images {
+            if let Ok(Some(embedding)) = self.process_face_full(&image_bytes).await {
+                 sqlx::query(
+                    "INSERT INTO face_embeddings (user_id, embedding) VALUES ($1, $2)",
+                )
+                .bind(user_id)
+                .bind(Vector::from(embedding.embedding))
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| Status::internal(e.to_string()))?;
+            }
+        }
+
+        // Process Voices
+        for voice_bytes in req.voices {
+            if let Ok(Some(embedding)) = self.process_voice_embedding(&voice_bytes).await {
+                 sqlx::query(
+                    "INSERT INTO voice_embeddings (user_id, embedding) VALUES ($1, $2)",
+                )
+                .bind(user_id)
+                .bind(Vector::from(embedding))
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| Status::internal(e.to_string()))?;
+            }
+        }
+
+        tx.commit().await.map_err(|e| Status::internal(e.to_string()))?;
+
+        Ok(Response::new(Empty {}))
+    }
+
+    async fn remove_user(&self, request: Request<IdRequest>) -> Result<Response<Empty>, Status> {
+        let req = request.into_inner();
+        sqlx::query("DELETE FROM users WHERE id = $1")
+            .bind(req.id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+        Ok(Response::new(Empty {}))
+    }
+
+    async fn list_users(
+        &self,
+        _request: Request<ListUsersRequest>,
+    ) -> Result<Response<ListUsersResponse>, Status> {
+        let rows = sqlx::query("SELECT id, name FROM users")
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+
+        let users = rows.into_iter().map(|r| {
+            User {
+                id: r.get("id"),
+                name: r.get("name"),
+            }
+        }).collect();
+
+        Ok(Response::new(ListUsersResponse { users }))
+    }
+
+    // --- Инфраструктура ---
+    async fn add_zone(
+        &self,
+        request: Request<AddZoneRequest>,
+    ) -> Result<Response<IdResponse>, Status> {
+        let req = request.into_inner();
+        let row = sqlx::query("INSERT INTO zones (name) VALUES ($1) RETURNING id")
+            .bind(req.name)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+        
+        let id: i32 = row.try_get("id").map_err(|e| Status::internal(e.to_string()))?;
+        Ok(Response::new(IdResponse { id }))
+    }
+
+    async fn list_zones(
+        &self,
+        _request: Request<ListZonesRequest>,
+    ) -> Result<Response<ListZonesResponse>, Status> {
+        let rows = sqlx::query("SELECT id, name FROM zones")
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+
+        let zones = rows.into_iter().map(|r| {
+            Zone {
+                id: r.get("id"),
+                name: r.get("name"),
+            }
+        }).collect();
+
+        Ok(Response::new(ListZonesResponse { zones }))
+    }
+
+    async fn add_room(
+        &self,
+        request: Request<AddRoomRequest>,
+    ) -> Result<Response<IdResponse>, Status> {
+        let req = request.into_inner();
+        let row = sqlx::query(
+            "INSERT INTO rooms (name, zone_id) VALUES ($1, $2) RETURNING id",
+        )
+        .bind(req.name)
+        .bind(req.zone_id)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| Status::internal(e.to_string()))?;
+
+        let id: i32 = row.try_get("id").map_err(|e| Status::internal(e.to_string()))?;
+        Ok(Response::new(IdResponse { id }))
+    }
+
+    async fn list_rooms(
+        &self,
+        _request: Request<ListRoomsRequest>,
+    ) -> Result<Response<ListRoomsResponse>, Status> {
+        let rows = sqlx::query("SELECT id, zone_id, name FROM rooms")
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+
+        let rooms = rows.into_iter().map(|r| {
+            Room {
+                id: r.get("id"),
+                zone_id: r.get("zone_id"),
+                name: r.get("name"),
+            }
+        }).collect();
+
+        Ok(Response::new(ListRoomsResponse { rooms }))
+    }
+
+    async fn add_device(
+        &self,
+        request: Request<AddDeviceRequest>,
+    ) -> Result<Response<IdResponse>, Status> {
+        let req = request.into_inner();
+        let row = sqlx::query(
+            "INSERT INTO devices (name, room_id, device_type, connection_string) VALUES ($1, $2, $3, $4) RETURNING id",
+        )
+        .bind(req.name)
+        .bind(req.room_id)
+        .bind(req.device_type)
+        .bind(req.connection_string)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| Status::internal(e.to_string()))?;
+
+        let id: i32 = row.try_get("id").map_err(|e| Status::internal(e.to_string()))?;
+        Ok(Response::new(IdResponse { id }))
+    }
+
+    async fn list_devices(
+        &self,
+        _request: Request<ListDevicesRequest>,
+    ) -> Result<Response<ListDevicesResponse>, Status> {
+        let rows = sqlx::query(
+            "SELECT id, room_id, name, device_type, connection_string FROM devices"
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| Status::internal(e.to_string()))?;
+
+        let mut devices: Vec<Device> = rows.into_iter().map(|r| Device {
+            id: r.get("id"),
+            room_id: r.get("room_id"),
+            name: r.get("name"),
+            device_type: r.get("device_type"),
+            connection_string: r.get("connection_string"),
+            is_active: true,
+        }).collect();
+
+        if devices.is_empty() {
+             devices.push(self.get_default_test_device().await);
+        }
+
+        Ok(Response::new(ListDevicesResponse { devices }))
+    }
+
+    async fn remove_device(
+        &self,
+        request: Request<IdRequest>,
+    ) -> Result<Response<Empty>, Status> {
+        let req = request.into_inner();
+        sqlx::query("DELETE FROM devices WHERE id = $1")
+            .bind(req.id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+        Ok(Response::new(Empty {}))
+    }
+
+    // --- Контроль Доступа ---
+
+    async fn grant_access(
+        &self,
+        request: Request<GrantAccessRequest>,
+    ) -> Result<Response<Empty>, Status> {
+        let req = request.into_inner();
+        sqlx::query(
+            "INSERT INTO access_rules (user_id, zone_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+        )
+        .bind(req.user_id)
+        .bind(req.zone_id)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| Status::internal(e.to_string()))?;
+        Ok(Response::new(Empty {}))
+    }
+
+    async fn set_access_rules(
+        &self,
+        request: Request<SetAccessRulesRequest>,
+    ) -> Result<Response<Empty>, Status> {
+        let req = request.into_inner();
+        let mut tx = self.pool.begin().await.map_err(|e| Status::internal(e.to_string()))?;
+        sqlx::query("DELETE FROM access_rules WHERE user_id = $1")
+            .bind(req.user_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+
+        if !req.allowed_room_ids.is_empty() {
+            let rows = sqlx::query(
+                "SELECT DISTINCT zone_id FROM rooms WHERE id = ANY($1)",
+            )
+            .bind(&req.allowed_room_ids)
+            .fetch_all(&mut *tx)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+
+            for r in rows {
+                let z_id: i32 = r.get("zone_id");
+                sqlx::query(
+                    "INSERT INTO access_rules (user_id, zone_id) VALUES ($1, $2)",
+                )
+                .bind(req.user_id)
+                .bind(z_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| Status::internal(e.to_string()))?;
+            }
+        }
+        tx.commit().await.map_err(|e| Status::internal(e.to_string()))?;
+        Ok(Response::new(Empty {}))
+    }
+
+    async fn get_user_access(
+        &self,
+        request: Request<IdRequest>,
+    ) -> Result<Response<GetUserAccessResponse>, Status> {
+        let req = request.into_inner();
+        let rows = sqlx::query(
+            r#"
+            SELECT r.id 
+            FROM rooms r
+            JOIN access_rules ar ON r.zone_id = ar.zone_id
+            WHERE ar.user_id = $1
+            "#,
+        )
+        .bind(req.id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| Status::internal(e.to_string()))?;
+
+        let room_ids = rows.into_iter().map(|r| r.get("id")).collect();
+        Ok(Response::new(GetUserAccessResponse { allowed_room_ids: room_ids }))
+    }
+
+    // --- MAIN IDENTIFICATION LOGIC ---
+    async fn check_access(
+        &self,
+        request: Request<CheckAccessRequest>,
+    ) -> Result<Response<AccessCheckResponse>, Status> {
+        let req = request.into_inner();
+        let device_id = req.device_id;
+
+        // 1. Process Face
+        let face_res_opt = self.process_face_full(&req.image).await?;
+        
+        let face_info = match face_res_opt {
+            Some(info) => info,
+            None => {
+                let log = format!("[Vision] No face detected. (Device: {})", device_id);
+                self.log_access(None, device_id, false, &log).await;
+                return Ok(Response::new(AccessCheckResponse {
+                    granted: false,
+                    user_name: "Unknown".into(),
+                    message: "No face detected".into(),
+                }));
+            }
+        };
+
+        // Liveness check log part
+        let liveness_log = format!("Liveness: {:.2}% ({}) on {}", face_info.liveness_score * 100.0, if face_info.is_live { "Real" } else { "Fake" }, face_info.provider);
+
+        // 2. Find User (Vector Search)
+        // distance < 0.6 is typical threshold
+        let user_match = sqlx::query(
+            r#"
+            SELECT u.id, u.name, (e.embedding <-> $1) as distance
+            FROM face_embeddings e
+            JOIN users u ON e.user_id = u.id
+            ORDER BY distance ASC
+            LIMIT 1
+            "#,
+        )
+        .bind(Vector::from(face_info.embedding))
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| Status::internal(format!("DB Error: {}", e)))?;
+
+        let (user_id, user_name, dist) = match user_match {
+            Some(rec) => {
+                let d: f64 = rec.get::<Option<f64>, _>("distance").unwrap_or(1.0);
+                let uid: i32 = rec.get("id");
+                let uname: String = rec.get("name");
+                (uid, uname, d)
+            },
+            None => (0, "Unknown".to_string(), 1.0),
+        };
+
+        // Decision Logic
+        let is_match = dist < self.face_similarity_threshold;
+        let is_live = face_info.is_live;
+        
+        // Debug string for UI
+        let debug_info = format!("{} | Match: {} (Dist: {:.3})", liveness_log, if is_match { &user_name } else { "None" }, dist);
+
+        if !is_live {
+             let final_log = format!("DENIED [Spoofing] {}", debug_info);
+             self.log_access(if is_match { Some(user_id) } else { None }, device_id, false, &final_log).await;
+             return Ok(Response::new(AccessCheckResponse {
+                 granted: false,
+                 user_name: "Spoof Attempt".into(),
+                 message: format!("Liveness Failed. {}", debug_info),
+             }));
+        }
+
+        if !is_match {
+             let final_log = format!("DENIED [Unknown User] {}", debug_info);
+             self.log_access(None, device_id, false, &final_log).await;
+             return Ok(Response::new(AccessCheckResponse {
+                 granted: false,
+                 user_name: "Unknown".into(),
+                 message: format!("Unknown User. {}", debug_info),
+             }));
+        }
+
+        // 3. Check Permissions (Zone)
+        if device_id == self.test_device_id {
+             // Test Device
+             let final_log = format!("GRANTED [Test Device] {}", debug_info);
+             self.log_access(Some(user_id), device_id, true, &final_log).await;
+             return Ok(Response::new(AccessCheckResponse {
+                granted: true,
+                user_name,
+                message: format!("Welcome (Test). {}", debug_info),
+            }));
+        }
+
+        // Find Zone
+        let zone_rec = sqlx::query(
+            r#"
+            SELECT r.zone_id, z.name as zone_name
+            FROM devices d
+            JOIN rooms r ON d.room_id = r.id
+            JOIN zones z ON r.zone_id = z.id
+            WHERE d.id = $1
+            "#,
+        )
+        .bind(device_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| Status::internal(format!("DB Error finding zone: {}", e)))?;
+
+        let (zone_id, zone_name) = match zone_rec {
+            Some(z) => (z.get::<i32, _>("zone_id"), z.get::<String, _>("zone_name")),
+            None => {
+                let final_log = format!("DENIED [Config Error] Device {} not in zone. {}", device_id, debug_info);
+                self.log_access(Some(user_id), device_id, false, &final_log).await;
+                return Err(Status::not_found("Device not found/assigned"));
+            }
+        };
+
+        // Check Rules
+        let rule_exists = sqlx::query(
+            "SELECT 1 as exists FROM access_rules WHERE user_id = $1 AND zone_id = $2",
+        )
+        .bind(user_id)
+        .bind(zone_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| Status::internal(e.to_string()))?;
+
+        if rule_exists.is_some() {
+            let final_log = format!("GRANTED [Zone: {}] {}", zone_name, debug_info);
+            self.log_access(Some(user_id), device_id, true, &final_log).await;
+            Ok(Response::new(AccessCheckResponse {
+                granted: true,
+                user_name,
+                message: format!("Welcome to {}. {}", zone_name, debug_info),
+            }))
+        } else {
+            let final_log = format!("DENIED [Zone: {}] No rights. {}", zone_name, debug_info);
+            self.log_access(Some(user_id), device_id, false, &final_log).await;
+            Ok(Response::new(AccessCheckResponse {
+                granted: false,
+                user_name,
+                message: format!("Access Denied. {}", debug_info),
+            }))
+        }
+    }
+
+    async fn get_logs(
+        &self,
+        request: Request<GetLogsRequest>,
+    ) -> Result<Response<GetLogsResponse>, Status> {
+        let req = request.into_inner();
+        let limit = if req.limit <= 0 { 50 } else { req.limit } as i64;
+        let offset = if req.offset < 0 { 0 } else { req.offset } as i64;
+
+        let rows = sqlx::query(
+            r#"
+            SELECT 
+                al.id, 
+                al.created_at, 
+                al.granted, 
+                al.details,
+                u.name as user_name,
+                d.name as device_name,
+                r.name as room_name,
+                z.name as zone_name
+            FROM access_logs al
+            LEFT JOIN users u ON al.user_id = u.id
+            LEFT JOIN devices d ON al.device_id = d.id
+            LEFT JOIN rooms r ON d.room_id = r.id
+            LEFT JOIN zones z ON r.zone_id = z.id
+            ORDER BY al.created_at DESC
+            LIMIT $1 OFFSET $2
+            "#,
+        )
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| Status::internal(e.to_string()))?;
+
+        let logs = rows.into_iter().map(|row| LogEntry {
+            id: row.get("id"),
+            timestamp: row.get::<Option<chrono::DateTime<chrono::Utc>>, _>("created_at")
+                .map(|t| t.to_rfc3339())
+                .unwrap_or_default(),
+            user_name: row.get::<Option<String>, _>("user_name").unwrap_or_else(|| "Unknown".to_string()),
+            room_name: row.get::<Option<String>, _>("room_name").unwrap_or_default(),
+            zone_name: row.get::<Option<String>, _>("zone_name").unwrap_or_default(),
+            access_granted: row.get("granted"),
+            details: row.get::<Option<String>, _>("details").unwrap_or_default(),
+        })
+        .collect();
+
+        Ok(Response::new(GetLogsResponse { logs }))
+    }
+    
+    async fn get_system_status(
+        &self,
+        _request: Request<Empty>,
+    ) -> Result<Response<SystemStatusResponse>, Status> {
+        // Query Audio Worker
+        let mut audio_client = AudioClient::new(self.audio_channel.clone());
+        let audio_status = match audio_client.get_status(Empty {}).await {
+            Ok(resp) => resp.into_inner(),
+            Err(e) => ServiceStatus {
+                online: false,
+                device: "None".to_string(),
+                message: format!("Error: {}", e.message()),
+            },
+        };
+
+        // Query Vision Worker
+        let mut vision_client = VisionClient::new(self.vision_channel.clone());
+        let vision_status = match vision_client.get_status(Empty {}).await {
+             Ok(resp) => resp.into_inner(),
+             Err(e) => ServiceStatus {
+                 online: false,
+                 device: "Unknown".to_string(),
+                 message: format!("Error: {}", e.message()),
+             },
+        };
+
+        Ok(Response::new(SystemStatusResponse {
+            vision: Some(vision_status),
+            audio: Some(audio_status),
+            database: Some(ServiceStatus { online: true, device: "Postgres".to_string(), message: "Connected".to_string() }),
+            gateway: Some(ServiceStatus { online: true, device: "Local".to_string(), message: "Running".to_string() }),
+        }))
+    }
+
+    async fn control_service(
+        &self,
+        _request: Request<ControlServiceRequest>,
+    ) -> Result<Response<StatusResponse>, Status> {
+         Ok(Response::new(StatusResponse { success: false, message: "Not implemented".to_string() }))
+    }
+
+    async fn control_door(
+        &self,
+        _request: Request<ControlDoorRequest>,
+    ) -> Result<Response<StatusResponse>, Status> {
+         Ok(Response::new(StatusResponse { success: true, message: "Command sent".to_string() }))
+    }
+
+    async fn scan_hardware(
+        &self,
+        _request: Request<Empty>,
+    ) -> Result<Response<ScanHardwareResponse>, Status> {
+        let rows = sqlx::query(
+            "SELECT id, room_id, name, device_type, connection_string FROM devices"
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| Status::internal(e.to_string()))?;
+
+        let mut devices: Vec<Device> = rows.into_iter().map(|r| Device {
+            id: r.get("id"),
+            room_id: r.get("room_id"),
+            name: r.get("name"),
+            device_type: r.get("device_type"),
+            connection_string: r.get("connection_string"),
+            is_active: true,
+        }).collect();
+
+        if devices.is_empty() {
+             devices.push(self.get_default_test_device().await);
+        }
+
+        Ok(Response::new(ScanHardwareResponse { found_devices: devices }))
+    }
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    tracing_subscriber::fmt::init();
+
+    let database_url = std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://user:password@localhost:5432/biometry_db".to_string());
+
+    let pool = PgPoolOptions::new()
+        .max_connections(5)
+        .connect(&database_url)
+        .await?;
+
+    let addr = "0.0.0.0:50051".parse()?;
+    
+    let audio_url = "http://127.0.0.1:50053";
+    tracing::info!("Connecting to Audio Worker at {}", audio_url);
+    let audio_channel = tonic::transport::Endpoint::from_static(audio_url)
+        .connect_lazy(); 
+
+    let vision_url = "http://127.0.0.1:50052";
+    tracing::info!("Connecting to Vision Worker at {}", vision_url);
+    let vision_channel = tonic::transport::Endpoint::from_static(vision_url)
+        .connect_lazy();
+
+    let face_similarity_threshold = std::env::var("FACE_SIMILARITY_THRESHOLD")
+        .unwrap_or_else(|_| "0.6".to_string())
+        .parse::<f64>()
+        .expect("FACE_SIMILARITY_THRESHOLD must be a valid f64");
+
+    let test_device_id = std::env::var("TEST_DEVICE_ID")
+        .unwrap_or_else(|_| "9999".to_string())
+        .parse::<i32>()
+        .expect("TEST_DEVICE_ID must be a valid i32");
+
+    let gateway = GatewayService::new(pool, audio_channel, vision_channel, face_similarity_threshold, test_device_id);
+
+    tracing::info!("Gateway Service listening on {}", addr);
+
+    Server::builder()
+        .add_service(GatekeeperServer::new(gateway))
+        .serve(addr)
+        .await?;
+
+    Ok(())
+}

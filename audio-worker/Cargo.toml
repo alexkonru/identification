@@ -1,0 +1,22 @@
+[package]
+name = "audio-worker"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+shared = { path = "../shared" }
+tokio = { workspace = true }
+tonic = { workspace = true }
+prost = { workspace = true }
+serde = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
+
+rubato = "0.16"
+ndarray = "0.16"
+byteorder = "1.5"
+
+[dependencies.ort]
+version = "2.0.0-rc.9"
+features = ["cuda", "half"]
