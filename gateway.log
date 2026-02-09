@@ -1,8 +1,0 @@
-    Blocking waiting for file lock on build directory
-   Compiling shared v0.1.0 (/home/alexandr/Рабочий стол/identification/shared)
-   Compiling gateway-service v0.1.0 (/home/alexandr/Рабочий стол/identification/gateway-service)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 40.59s
-     Running `target/debug/gateway-service`
-Connecting to Audio Worker at http://127.0.0.1:50053
-Connecting to Vision Worker at http://127.0.0.1:50052
-Gateway Service listening on 0.0.0.0:50051
