@@ -1,1 +1,19 @@
+# Rust
 /target
+
+# Logs
+*.log
+nohup.out
+
+# Environment
+.env
+
+# Python
+/client/venv/
+/client/__pycache__/
+/client/biometry_pb2.py
+/client/biometry_pb2_grpc.py
+
+# Models
+*.onnx
+*.onnx.data
