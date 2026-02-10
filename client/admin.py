@@ -73,9 +73,11 @@ class BiometryClient:
             name=name, room_id=room_id, device_type=device_type, connection_string=connection_string
         ))
 
-    def set_access_rules(self, user_id, room_ids):
+    def set_access_rules(self, user_id, room_ids, zone_ids=None):
+        if zone_ids is None:
+            zone_ids = []
         return self.stub.SetAccessRules(biometry_pb2.SetAccessRulesRequest(
-            user_id=user_id, allowed_room_ids=room_ids
+            user_id=user_id, allowed_room_ids=room_ids, allowed_zone_ids=zone_ids
         ))
 
     def get_user_access(self, user_id):

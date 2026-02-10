@@ -146,11 +146,13 @@ message GrantAccessRequest {
 
 message SetAccessRulesRequest {
   int32 user_id = 1;
-  repeated int32 allowed_room_ids = 2; 
+  repeated int32 allowed_room_ids = 2;
+  repeated int32 allowed_zone_ids = 3;
 }
 
 message GetUserAccessResponse {
   repeated int32 allowed_room_ids = 1;
+  repeated int32 allowed_zone_ids = 2;
 }
 
 message CheckAccessRequest {
