@@ -1,6 +1,7 @@
 import os
 import subprocess
 import sys
+import time
 import cv2
 import grpc
 import PyQt6.QtCore as QtCore
@@ -48,19 +49,23 @@ class BiometryClient:
         self.vision_stub = biometry_pb2_grpc.VisionStub(self.vision_channel)
         self.audio_stub = biometry_pb2_grpc.AudioStub(self.audio_channel)
 
-    def wait_until_ready(self, timeout=3.0):
+    def wait_until_ready(self, timeout=5.0):
         try:
             grpc.channel_ready_future(self.channel).result(timeout=timeout)
+            # Real RPC probe: avoids false-positive "channel ready" states
+            self.stub.GetSystemStatus(biometry_pb2.Empty(), timeout=timeout)
             return True
-        except grpc.FutureTimeoutError:
+        except (grpc.FutureTimeoutError, grpc.RpcError):
             return False
 
     def list_users(self):
-        try:
-            return self.stub.ListUsers(biometry_pb2.ListUsersRequest()).users
-        except grpc.RpcError as e:
-            print(f"RPC Error: {e}")
-            return []
+        # Gateway can be up slightly later than UI tabs initialization.
+        for _ in range(3):
+            try:
+                return self.stub.ListUsers(biometry_pb2.ListUsersRequest(), timeout=2.0).users
+            except grpc.RpcError:
+                time.sleep(0.4)
+        return []
 
     def register_user(self, name, image_bytes):
         return self.stub.RegisterUser(biometry_pb2.RegisterUserRequest(name=name, images=[image_bytes], voices=[]))
@@ -162,7 +167,7 @@ class BiometryClient:
             }
 
     def get_system_status(self):
-        return self.stub.GetSystemStatus(biometry_pb2.Empty())
+        return self.stub.GetSystemStatus(biometry_pb2.Empty(), timeout=3.0)
 
     def control_service(self, service, action):
         return self.stub.ControlService(biometry_pb2.ControlServiceRequest(service_name=service, action=action))
@@ -681,7 +686,7 @@ if __name__ == "__main__":
         gateway_addr = sys.argv[1].strip()
 
     client = BiometryClient(gateway_addr)
-    if not client.wait_until_ready(timeout=3.0):
+    if not client.wait_until_ready(timeout=6.0):
         QMessageBox.critical(
             None,
             "Gateway недоступен",
