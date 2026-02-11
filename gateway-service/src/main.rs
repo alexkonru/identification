@@ -13,6 +13,7 @@ use shared::biometry::{
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{Pool, Postgres, Row};
 use tokio::sync::mpsc;
+use tokio::time::{Duration, sleep};
 use tonic::{
     Request, Response, Status,
     transport::{Channel, Server},
@@ -953,6 +954,45 @@ impl Gatekeeper for GatewayService {
     }
 }
 
+async fn connect_db_with_retry(database_url: &str) -> Result<Pool<Postgres>, sqlx::Error> {
+    let max_attempts = std::env::var("DB_CONNECT_MAX_ATTEMPTS")
+        .ok()
+        .and_then(|v| v.parse::<u32>().ok())
+        .unwrap_or(30);
+    let delay_ms = std::env::var("DB_CONNECT_RETRY_DELAY_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(1000);
+
+    let mut last_err: Option<sqlx::Error> = None;
+    for attempt in 1..=max_attempts {
+        match PgPoolOptions::new()
+            .max_connections(5)
+            .connect(database_url)
+            .await
+        {
+            Ok(pool) => {
+                tracing::info!("Database connected on attempt {}/{}", attempt, max_attempts);
+                return Ok(pool);
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "Database connection attempt {}/{} failed: {}",
+                    attempt,
+                    max_attempts,
+                    e
+                );
+                last_err = Some(e);
+                if attempt < max_attempts {
+                    sleep(Duration::from_millis(delay_ms)).await;
+                }
+            }
+        }
+    }
+
+    Err(last_err.expect("last database error should be set"))
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
@@ -960,10 +1000,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let database_url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://user:password@localhost:5432/biometry_db".to_string());
 
-    let pool = PgPoolOptions::new()
-        .max_connections(5)
-        .connect(&database_url)
-        .await?;
+    let pool = connect_db_with_retry(&database_url).await.map_err(|e| {
+        tracing::error!("Could not connect to database after retries: {}", e);
+        e
+    })?;
 
     let addr = "0.0.0.0:50051".parse()?;
 
