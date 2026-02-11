@@ -1,3 +1,4 @@
+import os
 import sys
 import cv2
 import grpc
@@ -37,8 +38,16 @@ def set_dark_theme(app):
 # --- gRPC Client Wrapper ---
 class BiometryClient:
     def __init__(self, address='127.0.0.1:50051'):
+        self.address = address
         self.channel = grpc.insecure_channel(address)
         self.stub = biometry_pb2_grpc.GatekeeperStub(self.channel)
+
+    def wait_until_ready(self, timeout=3.0):
+        try:
+            grpc.channel_ready_future(self.channel).result(timeout=timeout)
+            return True
+        except grpc.FutureTimeoutError:
+            return False
 
     def list_users(self):
         try:
@@ -537,8 +546,8 @@ class VideoThread(QThread):
         return None
 
 class AdminApp(QMainWindow):
-    def __init__(self):
-        super().__init__(); self.setWindowTitle("Biometry Admin Panel 2.0"); self.resize(1200, 800); self.client = BiometryClient()
+    def __init__(self, client):
+        super().__init__(); self.setWindowTitle("Biometry Admin Panel 2.0"); self.resize(1200, 800); self.client = client
         self.tabs = QTabWidget(); self.personnel_tab = PersonnelTab(self.client); self.monitor_tab = MonitoringTab(self.client)
         self.tabs.addTab(SystemTab(self.client), "⚙️ Система"); self.tabs.addTab(self.personnel_tab, "👥 Персонал")
         self.tabs.addTab(InfrastructureTab(self.client), "🏗 Инфраструктура"); self.tabs.addTab(AccessTab(self.client), "🔐 Доступ")
@@ -553,4 +562,23 @@ class AdminApp(QMainWindow):
         self.personnel_tab.stop_camera(); self.monitor_tab.stop_all_videos(); event.accept()
 
 if __name__ == "__main__":
-    app = QApplication(sys.argv); set_dark_theme(app); w = AdminApp(); w.show(); sys.exit(app.exec())
+    app = QApplication(sys.argv)
+    set_dark_theme(app)
+
+    gateway_addr = os.getenv("GATEWAY_ADDR", "127.0.0.1:50051")
+    if len(sys.argv) > 1 and sys.argv[1].strip():
+        gateway_addr = sys.argv[1].strip()
+
+    client = BiometryClient(gateway_addr)
+    if not client.wait_until_ready(timeout=3.0):
+        QMessageBox.critical(
+            None,
+            "Gateway недоступен",
+            f"Не удалось подключиться к gRPC Gateway по адресу {gateway_addr}.\n"
+            "Проверь, что gateway-service запущен (например, ./start_all.sh или docker compose up).",
+        )
+        sys.exit(1)
+
+    w = AdminApp(client)
+    w.show()
+    sys.exit(app.exec())
