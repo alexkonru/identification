@@ -1,4 +1,5 @@
 import os
+import subprocess
 import sys
 import cv2
 import grpc
@@ -41,6 +42,11 @@ class BiometryClient:
         self.address = address
         self.channel = grpc.insecure_channel(address)
         self.stub = biometry_pb2_grpc.GatekeeperStub(self.channel)
+        host = address.split(':')[0]
+        self.vision_channel = grpc.insecure_channel(f"{host}:50052")
+        self.audio_channel = grpc.insecure_channel(f"{host}:50053")
+        self.vision_stub = biometry_pb2_grpc.VisionStub(self.vision_channel)
+        self.audio_stub = biometry_pb2_grpc.AudioStub(self.audio_channel)
 
     def wait_until_ready(self, timeout=3.0):
         try:
@@ -57,7 +63,7 @@ class BiometryClient:
             return []
 
     def register_user(self, name, image_bytes):
-        return self.stub.RegisterUser(biometry_pb2.RegisterUserRequest(name=name, image=image_bytes))
+        return self.stub.RegisterUser(biometry_pb2.RegisterUserRequest(name=name, images=[image_bytes], voices=[]))
 
     def remove_user(self, user_id):
         return self.stub.RemoveUser(biometry_pb2.IdRequest(id=user_id))
@@ -90,7 +96,70 @@ class BiometryClient:
         ))
 
     def get_user_access(self, user_id):
-        return self.stub.GetUserAccess(biometry_pb2.IdRequest(id=user_id)).allowed_room_ids
+        return self.stub.GetUserAccess(biometry_pb2.IdRequest(id=user_id))
+
+    def run_identification_pipeline(self, device_id, image_bytes, audio_bytes=None, sample_rate=16000):
+        details = []
+        vision_ok = False
+        audio_ok = None
+
+        try:
+            face = self.vision_stub.ProcessFace(biometry_pb2.ImageFrame(content=image_bytes))
+            vision_ok = face.detected and face.is_live
+            details.append(
+                f"[VISION] detected={face.detected}, live={face.is_live}, "
+                f"score={face.liveness_score:.3f}, provider={face.execution_provider or '-'}"
+            )
+            if face.error_msg:
+                details.append(f"[VISION] error={face.error_msg}")
+        except grpc.RpcError as e:
+            details.append(f"[VISION] RPC ERROR: {e.code().name} {e.details()}")
+
+        if audio_bytes:
+            try:
+                voice = self.audio_stub.ProcessVoice(
+                    biometry_pb2.AudioChunk(content=audio_bytes, sample_rate=sample_rate)
+                )
+                audio_ok = voice.detected
+                details.append(
+                    f"[AUDIO] detected={voice.detected}, emb_len={len(voice.embedding)}, "
+                    f"provider={voice.execution_provider or '-'}"
+                )
+                if voice.error_msg:
+                    details.append(f"[AUDIO] error={voice.error_msg}")
+            except grpc.RpcError as e:
+                audio_ok = False
+                details.append(f"[AUDIO] RPC ERROR: {e.code().name} {e.details()}")
+        else:
+            details.append("[AUDIO] skipped")
+
+        try:
+            access = self.stub.CheckAccess(
+                biometry_pb2.CheckAccessRequest(device_id=device_id, image=image_bytes)
+            )
+            details.append(
+                f"[DECISION] granted={access.granted}, user={access.user_name}, msg={access.message}"
+            )
+            return {
+                "ok": True,
+                "granted": access.granted,
+                "user_name": access.user_name,
+                "message": access.message,
+                "vision_ok": vision_ok,
+                "audio_ok": audio_ok,
+                "details": details,
+            }
+        except grpc.RpcError as e:
+            details.append(f"[GATEWAY] RPC ERROR: {e.code().name} {e.details()}")
+            return {
+                "ok": False,
+                "granted": False,
+                "user_name": "-",
+                "message": e.details(),
+                "vision_ok": vision_ok,
+                "audio_ok": audio_ok,
+                "details": details,
+            }
 
     def get_system_status(self):
         return self.stub.GetSystemStatus(biometry_pb2.Empty())
@@ -363,7 +432,7 @@ class AccessTab(QWidget):
         for u in self.client.list_users(): self.user_list.addItem(f"{u.id}: {u.name}")
     def load_user_rights(self, current, prev):
         if not current: return
-        self.rights_tree.clear(); uid = int(current.text().split(':')[0]); allowed = set(self.client.get_user_access(uid))
+        self.rights_tree.clear(); uid = int(current.text().split(':')[0]); allowed = set(self.client.get_user_access(uid).allowed_room_ids)
         zones = self.client.list_zones(); rooms = self.client.list_rooms(); z_map = {z.id: QTreeWidgetItem([z.name]) for z in zones}
         for r in rooms:
             item = QTreeWidgetItem([r.name]); item.setCheckState(0, Qt.CheckState.Checked if r.id in allowed else Qt.CheckState.Unchecked)
@@ -446,12 +515,43 @@ class MonitoringTab(QWidget):
         self.tree = QTreeWidget(); self.tree.setHeaderHidden(True); self.tree.currentItemChanged.connect(self.on_room_select)
         left.addWidget(QLabel("<b>Помещения:</b>")); left.addWidget(self.tree)
         self.chk_active = QCheckBox("🚀 Live ID (Активный режим)"); self.chk_active.setToolTip("Клиент сам отправляет кадры на сервер")
+        self.chk_mic = QCheckBox("🎤 Использовать микрофон в пайплайне")
+        self.chk_mic.setToolTip("Клиент пишет короткий raw-аудиофрагмент через arecord и отправляет в audio-worker")
         left.addWidget(self.chk_active)
+        left.addWidget(self.chk_mic)
         btn = QPushButton("🔄 Обновить"); btn.clicked.connect(self.refresh_tree); left.addWidget(btn)
         layout.addLayout(left, 1)
         self.video_container = QWidget(); self.grid_layout = QGridLayout(self.video_container)
         scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setWidget(self.video_container); layout.addWidget(scroll, 3)
+        self.pipeline_log = QTextEdit()
+        self.pipeline_log.setReadOnly(True)
+        self.pipeline_log.setMinimumWidth(420)
+        self.pipeline_log.setPlaceholderText("Здесь будут отображаться шаги пайплайна идентификации...")
+        layout.addWidget(self.pipeline_log, 2)
         self.refresh_tree(); self.log_timer.start(1000)
+
+    def capture_audio_raw(self, duration_s=1, sample_rate=16000):
+        cmd = [
+            "arecord",
+            "-q",
+            "-d",
+            str(duration_s),
+            "-r",
+            str(sample_rate),
+            "-c",
+            "1",
+            "-f",
+            "S16_LE",
+            "-t",
+            "raw",
+            "-",
+        ]
+        try:
+            proc = subprocess.run(cmd, capture_output=True, check=True)
+            return proc.stdout
+        except Exception as e:
+            self.pipeline_log.append(f"[AUDIO] capture failed: {e}")
+            return None
 
     def refresh_tree(self):
         self.tree.clear()
@@ -493,20 +593,31 @@ class MonitoringTab(QWidget):
     def process_active_mode(self):
         if self.chk_active.isChecked():
             # Active Mode: Send frames
+            audio_bytes = None
+            if self.chk_mic.isChecked():
+                audio_bytes = self.capture_audio_raw(duration_s=1, sample_rate=16000)
+
             for dev_id, t in self.active_cameras.items():
                 frame = t.get_frame_bytes()
                 if frame:
                     try:
-                        resp = self.client.stub.CheckAccess(biometry_pb2.CheckAccessRequest(device_id=dev_id, image=frame))
-                        msg = f"{resp.user_name}: {'OK' if resp.granted else 'NO'}\n{resp.message}" # Server usually sends generic message, log has details
-                        # To show details we rely on log or update server response. 
-                        # Server now logs details to DB. Let's try to fetch latest log for details too?
-                        # Or just show the main decision.
-                        # Actually, we can fetch logs in parallel or just show result.
-                        # Let's show result color.
-                        color = (0, 255, 0) if resp.granted else (0, 0, 255)
+                        result = self.client.run_identification_pipeline(dev_id, frame, audio_bytes=audio_bytes)
+                        msg = f"{result['user_name']}: {'OK' if result['granted'] else 'NO'}\n{result['message']}"
+                        color = (0, 255, 0) if result['granted'] else (0, 0, 255)
                         t.set_overlay(msg, color)
-                    except: pass
+
+                        self.pipeline_log.clear()
+                        self.pipeline_log.append(f"Device ID: {dev_id}")
+                        self.pipeline_log.append("=" * 50)
+                        for line in result["details"]:
+                            self.pipeline_log.append(line)
+                        self.pipeline_log.append("=" * 50)
+                        self.pipeline_log.append(
+                            f"RESULT: {'GRANTED' if result['granted'] else 'DENIED'} | "
+                            f"VISION_OK={result['vision_ok']} | AUDIO_OK={result['audio_ok']}"
+                        )
+                    except Exception as e:
+                        self.pipeline_log.append(f"[PIPELINE] ERROR: {e}")
         else:
             # Passive Mode: Check logs
             try:
