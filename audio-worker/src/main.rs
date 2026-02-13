@@ -181,49 +181,21 @@ impl Audio for AudioService {
         let fixed_input_shape = vec![1, TARGET_AUDIO_SAMPLE_LENGTH as i64];
         let fixed_input_tensor_values = model_input_samples;
 
-        // --- Step 2: VAD ---
+        // --- Step 2: Speech presence check ---
+        // NOTE: current silero_vad export has dynamic-state/runtime issues in this environment
+        // (shape/rank mismatches in recurrent path). To keep pipeline stable we apply
+        // lightweight RMS-energy gating before spoof/embedding stages.
         {
-            let mut session = self.models.vad.lock().unwrap();
-            let input_value =
-                Tensor::from_array((vad_input_shape.clone(), vad_input_tensor_values.clone()))
-                    .map_err(|e| Status::internal(format!("VAD input creation error: {}", e)))?;
-
-            // Silero VAD ONNX in this project expects 3 inputs in order:
-            // 1) audio chunk [1, T] (float)
-            // 2) recurrent state [2, 1, 128] (float)
-            // 3) sample rate [1] (int64)
-            let state_value = Tensor::from_array((vec![2, 1, 128], vec![0.0_f32; 2 * 1 * 128]))
-                .map_err(|e| Status::internal(format!("VAD state tensor creation error: {}", e)))?;
-
-            let sr_value = Tensor::from_array((vec![1], vec![16000_i64]))
-                .map_err(|e| Status::internal(format!("VAD sr tensor creation error: {}", e)))?;
-
-            let outputs = session
-                .run(inputs![input_value, state_value, sr_value])
-                .map_err(|e| Status::internal(format!("VAD Inference error: {}", e)))?;
-
-            // Output: (1, 2) prob.
-            let (_, output_slice) = outputs[0]
-                .try_extract_tensor::<f32>()
-                .map_err(|_| Status::internal("VAD output extract error"))?;
-
-            // Assuming [1, 2], index 1 is speech probability.
-            // Or [1, 1].
-            let speech_prob = if output_slice.len() >= 2 {
-                output_slice[1]
-            } else if output_slice.len() == 1 {
-                output_slice[0]
-            } else {
-                0.0
-            };
-
-            if speech_prob < 0.5 {
+            let rms = (vad_input_tensor_values.iter().map(|v| v * v).sum::<f32>()
+                / vad_input_tensor_values.len().max(1) as f32)
+                .sqrt();
+            if rms < 0.005 {
                 return Ok(Response::new(BioResult {
                     detected: false,
                     is_live: false,
                     liveness_score: 0.0,
                     embedding: vec![],
-                    error_msg: "No speech detected".to_string(),
+                    error_msg: "No speech detected (energy gate)".to_string(),
                     execution_provider: "CPU".to_string(),
                 }));
             }

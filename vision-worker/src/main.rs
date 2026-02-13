@@ -11,7 +11,10 @@ use shared::biometry::{
     vision_server::{Vision, VisionServer},
 };
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
+};
 use tonic::{Request, Response, Status, transport::Server};
 use tracing::{debug, error, info, warn};
 
@@ -158,8 +161,10 @@ struct ModelStore {
     yunet: Mutex<Session>,
     arcface: Mutex<Session>,
     liveness: Mutex<Session>,
-    provider: String,
-    init_message: String,
+    provider: Mutex<String>,
+    init_message: Mutex<String>,
+    models_dir: String,
+    use_cpu_runtime: AtomicBool,
 }
 
 impl ModelStore {
@@ -239,8 +244,10 @@ impl ModelStore {
             yunet: Mutex::new(yunet),
             arcface: Mutex::new(arcface),
             liveness: Mutex::new(liveness),
-            provider: used_provider,
-            init_message: init_msg,
+            provider: Mutex::new(used_provider),
+            init_message: Mutex::new(init_msg),
+            models_dir: models_dir.to_string(),
+            use_cpu_runtime: AtomicBool::new(force_cpu),
         })
     }
 
@@ -257,6 +264,42 @@ impl ModelStore {
             .context("Не удалось загрузить модели даже на CPU")?;
 
         Ok((sessions.0, sessions.1, sessions.2, "CPU".to_string()))
+    }
+
+    fn switch_to_cpu(&self, reason: &str) -> Result<()> {
+        if self.use_cpu_runtime.load(Ordering::Relaxed) {
+            return Ok(());
+        }
+
+        let yunet_path = Path::new(&self.models_dir).join("face_detection_yunet_2023mar.onnx");
+        let arcface_path = Path::new(&self.models_dir).join("arcface.onnx");
+        let liveness_path = Path::new(&self.models_dir).join("MiniFASNetV2.onnx");
+
+        let (y, a, l, _) = Self::load_cpu(&yunet_path, &arcface_path, &liveness_path)?;
+        *self
+            .yunet
+            .lock()
+            .map_err(|_| anyhow::anyhow!("yunet mutex poisoned"))? = y;
+        *self
+            .arcface
+            .lock()
+            .map_err(|_| anyhow::anyhow!("arcface mutex poisoned"))? = a;
+        *self
+            .liveness
+            .lock()
+            .map_err(|_| anyhow::anyhow!("liveness mutex poisoned"))? = l;
+        *self
+            .provider
+            .lock()
+            .map_err(|_| anyhow::anyhow!("provider mutex poisoned"))? = "CPU".to_string();
+        *self
+            .init_message
+            .lock()
+            .map_err(|_| anyhow::anyhow!("init message mutex poisoned"))? =
+            format!("Runtime fallback to CPU: {}", reason);
+        self.use_cpu_runtime.store(true, Ordering::Relaxed);
+        warn!("Vision runtime switched to CPU fallback: {}", reason);
+        Ok(())
     }
 
     fn try_load(
@@ -301,8 +344,18 @@ impl Vision for VisionService {
     ) -> Result<Response<ServiceStatus>, Status> {
         Ok(Response::new(ServiceStatus {
             online: true,
-            device: self.models.provider.clone(),
-            message: self.models.init_message.clone(),
+            device: self
+                .models
+                .provider
+                .lock()
+                .map(|v| v.clone())
+                .unwrap_or_else(|_| "unknown".to_string()),
+            message: self
+                .models
+                .init_message
+                .lock()
+                .map(|v| v.clone())
+                .unwrap_or_else(|_| "status unavailable".to_string()),
         }))
     }
 
@@ -360,9 +413,27 @@ impl Vision for VisionService {
             .lock()
             .map_err(|_| Status::internal("Не удалось захватить мьютекс Yunet"))?;
 
-        let outputs_yunet = session_yunet
-            .run(inputs![input_value_yunet])
-            .map_err(|e| Status::internal(format!("Ошибка инференса Yunet: {}", e)))?;
+        let outputs_yunet = match session_yunet.run(inputs![input_value_yunet]) {
+            Ok(out) => out,
+            Err(e) => {
+                let err_text = e.to_string();
+                if err_text.contains("cudaErrorSymbolNotFound") {
+                    self.models.switch_to_cpu(&err_text).map_err(|se| {
+                        Status::internal(format!("Vision CPU fallback failed: {}", se))
+                    })?;
+                    drop(session_yunet);
+                    let mut cpu_session =
+                        self.models.yunet.lock().map_err(|_| {
+                            Status::internal("Не удалось захватить CPU мьютекс Yunet")
+                        })?;
+                    cpu_session.run(inputs![input_value_yunet]).map_err(|e2| {
+                        Status::internal(format!("Ошибка инференса Yunet (CPU fallback): {}", e2))
+                    })?
+                } else {
+                    return Err(Status::internal(format!("Ошибка инференса Yunet: {}", e)));
+                }
+            }
+        };
 
         let outputs_yunet_value = &outputs_yunet[0];
         let outputs_yunet_slice = outputs_yunet_value
@@ -391,7 +462,12 @@ impl Vision for VisionService {
                 liveness_score: 0.0,
                 embedding: vec![],
                 error_msg: "Лицо не обнаружено".to_string(),
-                execution_provider: self.models.provider.clone(),
+                execution_provider: self
+                    .models
+                    .provider
+                    .lock()
+                    .map(|v| v.clone())
+                    .unwrap_or_else(|_| "unknown".to_string()),
             }));
         };
 
@@ -502,7 +578,12 @@ impl Vision for VisionService {
             liveness_score,
             embedding: embedding_vec,
             error_msg: String::new(),
-            execution_provider: self.models.provider.clone(),
+            execution_provider: self
+                .models
+                .provider
+                .lock()
+                .map(|v| v.clone())
+                .unwrap_or_else(|_| "unknown".to_string()),
         }))
     }
     async fn shutdown(&self, _request: Request<Empty>) -> Result<Response<Empty>, Status> {
