@@ -140,10 +140,14 @@ class BiometryClient:
 
         try:
             access = self.stub.CheckAccess(
-                biometry_pb2.CheckAccessRequest(device_id=device_id, image=image_bytes)
+                biometry_pb2.CheckAccessRequest(device_id=device_id, image=image_bytes, audio=audio_bytes or b"", audio_sample_rate=sample_rate)
             )
             details.append(
-                f"[DECISION] granted={access.granted}, user={access.user_name}, msg={access.message}"
+                f"[DECISION] stage={access.decision_stage}, granted={access.granted}, user={access.user_name}, msg={access.message}"
+            )
+            details.append(
+                f"[CONF] face_live={access.face_live}({access.face_liveness_score:.3f}) "
+                f"face_dist={access.face_distance:.3f}, voice_dist={access.voice_distance:.3f}, final={access.final_confidence:.3f}"
             )
             return {
                 "ok": True,
@@ -153,6 +157,11 @@ class BiometryClient:
                 "vision_ok": vision_ok,
                 "audio_ok": audio_ok,
                 "details": details,
+                "stage": access.decision_stage,
+                "face_score": access.face_liveness_score,
+                "face_distance": access.face_distance,
+                "voice_distance": access.voice_distance,
+                "final_confidence": access.final_confidence,
             }
         except grpc.RpcError as e:
             details.append(f"[GATEWAY] RPC ERROR: {e.code().name} {e.details()}")
@@ -164,6 +173,11 @@ class BiometryClient:
                 "vision_ok": vision_ok,
                 "audio_ok": audio_ok,
                 "details": details,
+                "stage": "gateway_error",
+                "face_score": 0.0,
+                "face_distance": 1.0,
+                "voice_distance": 1.0,
+                "final_confidence": 0.0,
             }
 
     def get_system_status(self):
@@ -368,6 +382,19 @@ class InfrastructureTab(QWidget):
         layout.addWidget(right, 1)
         self.refresh_tree()
 
+    def open_operator_identification(self):
+        item = self.tree.currentItem()
+        if not item or item.childCount() > 0:
+            QMessageBox.information(self, "Выбор комнаты", "Сначала выбери конкретную комнату/камеру в дереве.")
+            return
+        room_id = item.data(0, Qt.ItemDataRole.UserRole)
+        devices = [d for d in self.client.list_devices() if d.room_id == room_id and d.device_type == 'camera']
+        if not devices:
+            QMessageBox.warning(self, "Нет камеры", "В выбранной комнате нет камеры.")
+            return
+        dlg = OperatorIdentificationDialog(self.client, devices[0], parent=self)
+        dlg.exec()
+
     def refresh_tree(self):
         self.tree.clear()
         try:
@@ -525,6 +552,9 @@ class MonitoringTab(QWidget):
         left.addWidget(self.chk_active)
         left.addWidget(self.chk_mic)
         btn = QPushButton("🔄 Обновить"); btn.clicked.connect(self.refresh_tree); left.addWidget(btn)
+        self.btn_open_id = QPushButton("🪪 Окно идентификации оператора")
+        self.btn_open_id.clicked.connect(self.open_operator_identification)
+        left.addWidget(self.btn_open_id)
         layout.addLayout(left, 1)
         self.video_container = QWidget(); self.grid_layout = QGridLayout(self.video_container)
         scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setWidget(self.video_container); layout.addWidget(scroll, 3)
@@ -557,6 +587,19 @@ class MonitoringTab(QWidget):
         except Exception as e:
             self.pipeline_log.append(f"[AUDIO] capture failed: {e}")
             return None
+
+    def open_operator_identification(self):
+        item = self.tree.currentItem()
+        if not item or item.childCount() > 0:
+            QMessageBox.information(self, "Выбор комнаты", "Сначала выбери конкретную комнату/камеру в дереве.")
+            return
+        room_id = item.data(0, Qt.ItemDataRole.UserRole)
+        devices = [d for d in self.client.list_devices() if d.room_id == room_id and d.device_type == 'camera']
+        if not devices:
+            QMessageBox.warning(self, "Нет камеры", "В выбранной комнате нет камеры.")
+            return
+        dlg = OperatorIdentificationDialog(self.client, devices[0], parent=self)
+        dlg.exec()
 
     def refresh_tree(self):
         self.tree.clear()
@@ -618,8 +661,8 @@ class MonitoringTab(QWidget):
                             self.pipeline_log.append(line)
                         self.pipeline_log.append("=" * 50)
                         self.pipeline_log.append(
-                            f"RESULT: {'GRANTED' if result['granted'] else 'DENIED'} | "
-                            f"VISION_OK={result['vision_ok']} | AUDIO_OK={result['audio_ok']}"
+                            f"RESULT: {'GRANTED' if result['granted'] else 'DENIED'} | STAGE={result['stage']} | "
+                            f"VISION_OK={result['vision_ok']} | AUDIO_OK={result['audio_ok']} | CONF={result['final_confidence']:.3f}"
                         )
                     except Exception as e:
                         self.pipeline_log.append(f"[PIPELINE] ERROR: {e}")
@@ -634,6 +677,71 @@ class MonitoringTab(QWidget):
                     color = (0, 255, 0) if log.access_granted else (0, 0, 255)
                     for t in self.active_cameras.values(): t.set_overlay(msg, color)
             except: pass
+
+class OperatorIdentificationDialog(QDialog):
+    def __init__(self, client, device, parent=None):
+        super().__init__(parent)
+        self.client = client
+        self.device = device
+        self.setWindowTitle(f"Идентификация оператора: {device.name}")
+        self.resize(900, 650)
+
+        layout = QVBoxLayout(self)
+        self.video_label = QLabel("Камера запускается...")
+        self.video_label.setMinimumSize(640, 360)
+        self.video_label.setStyleSheet("background-color: black;")
+        layout.addWidget(self.video_label)
+
+        self.log = QTextEdit()
+        self.log.setReadOnly(True)
+        layout.addWidget(self.log)
+
+        self.chk_mic = QCheckBox("🎤 Активный микрофон")
+        self.chk_mic.setChecked(True)
+        layout.addWidget(self.chk_mic)
+
+        controls = QHBoxLayout()
+        self.btn_start = QPushButton("▶ Запустить пайплайн")
+        self.btn_stop = QPushButton("⏹ Остановить")
+        controls.addWidget(self.btn_start)
+        controls.addWidget(self.btn_stop)
+        layout.addLayout(controls)
+
+        self.thread = VideoThread(device.connection_string, device.id)
+        self.thread.frame_ready.connect(lambda img: self.video_label.setPixmap(QPixmap.fromImage(img).scaled(self.video_label.size(), Qt.AspectRatioMode.KeepAspectRatio)))
+        self.thread.start()
+
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self.run_pipeline_tick)
+
+        self.btn_start.clicked.connect(lambda: self.timer.start(1300))
+        self.btn_stop.clicked.connect(self.timer.stop)
+
+    def run_pipeline_tick(self):
+        frame = self.thread.get_frame_bytes()
+        if not frame:
+            return
+        audio = None
+        if self.chk_mic.isChecked():
+            audio = self.parent().capture_audio_raw(duration_s=1, sample_rate=16000) if hasattr(self.parent(), 'capture_audio_raw') else None
+        result = self.client.run_identification_pipeline(self.device.id, frame, audio_bytes=audio)
+
+        self.log.clear()
+        self.log.append(f"Device: {self.device.id} ({self.device.name})")
+        self.log.append("=" * 60)
+        for line in result['details']:
+            self.log.append(line)
+        self.log.append("=" * 60)
+        self.log.append(
+            f"RESULT: {'GRANTED' if result['granted'] else 'DENIED'} | STAGE={result['stage']} | "
+            f"CONF={result['final_confidence']:.3f}"
+        )
+
+    def closeEvent(self, event):
+        self.timer.stop()
+        self.thread.stop()
+        self.thread.wait()
+        super().closeEvent(event)
 
 class VideoThread(QThread):
     frame_ready = pyqtSignal(QImage)

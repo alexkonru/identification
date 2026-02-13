@@ -32,6 +32,7 @@ pub struct GatewayService {
     audio_channel: Channel,
     vision_channel: Channel,
     face_similarity_threshold: f64,
+    voice_similarity_threshold: f64,
     test_device_id: i32,
     shutdown_tx: mpsc::Sender<()>,
 }
@@ -42,6 +43,7 @@ impl GatewayService {
         audio_channel: Channel,
         vision_channel: Channel,
         face_similarity_threshold: f64,
+        voice_similarity_threshold: f64,
         test_device_id: i32,
         shutdown_tx: mpsc::Sender<()>,
     ) -> Self {
@@ -50,6 +52,7 @@ impl GatewayService {
             audio_channel,
             vision_channel,
             face_similarity_threshold,
+            voice_similarity_threshold,
             test_device_id,
             shutdown_tx,
         }
@@ -535,32 +538,41 @@ impl Gatekeeper for GatewayService {
         let req = request.into_inner();
         let device_id = req.device_id;
 
-        // 1. Process Face
-        let face_res_opt = self.process_face_full(&req.image).await?;
+        let mut response = AccessCheckResponse {
+            granted: false,
+            user_name: "Unknown".into(),
+            message: String::new(),
+            face_detected: false,
+            face_live: false,
+            face_liveness_score: 0.0,
+            face_distance: 1.0,
+            face_match: false,
+            voice_provided: !req.audio.is_empty(),
+            voice_detected: false,
+            voice_distance: 1.0,
+            voice_match: false,
+            final_confidence: 0.0,
+            decision_stage: "start".into(),
+        };
 
+        // 1) Face + liveness
+        let face_res_opt = self.process_face_full(&req.image).await?;
         let face_info = match face_res_opt {
             Some(info) => info,
             None => {
-                let log = format!("[Vision] No face detected. (Device: {})", device_id);
-                self.log_access(None, device_id, false, &log).await;
-                return Ok(Response::new(AccessCheckResponse {
-                    granted: false,
-                    user_name: "Unknown".into(),
-                    message: "No face detected".into(),
-                }));
+                response.message = "No face detected".into();
+                response.decision_stage = "face_detection".into();
+                self.log_access(None, device_id, false, "DENIED [Face] No face detected")
+                    .await;
+                return Ok(Response::new(response));
             }
         };
 
-        // Liveness check log part
-        let liveness_log = format!(
-            "Liveness: {:.2}% ({}) on {}",
-            face_info.liveness_score * 100.0,
-            if face_info.is_live { "Real" } else { "Fake" },
-            face_info.provider
-        );
+        response.face_detected = true;
+        response.face_live = face_info.is_live;
+        response.face_liveness_score = face_info.liveness_score;
 
-        // 2. Find User (Vector Search)
-        // distance < 0.6 is typical threshold
+        // 2) Face identification
         let user_match = sqlx::query(
             r#"
             SELECT u.id, u.name, (e.embedding <-> $1) as distance
@@ -575,7 +587,7 @@ impl Gatekeeper for GatewayService {
         .await
         .map_err(|e| Status::internal(format!("DB Error: {}", e)))?;
 
-        let (user_id, user_name, dist) = match user_match {
+        let (user_id, user_name, face_dist) = match user_match {
             Some(rec) => {
                 let d: f64 = rec.get::<Option<f64>, _>("distance").unwrap_or(1.0);
                 let uid: i32 = rec.get("id");
@@ -585,58 +597,111 @@ impl Gatekeeper for GatewayService {
             None => (0, "Unknown".to_string(), 1.0),
         };
 
-        // Decision Logic
-        let is_match = dist < self.face_similarity_threshold;
-        let is_live = face_info.is_live;
+        response.user_name = user_name.clone();
+        response.face_distance = face_dist as f32;
+        response.face_match = face_dist < self.face_similarity_threshold;
 
-        // Debug string for UI
-        let debug_info = format!(
-            "{} | Match: {} (Dist: {:.3})",
-            liveness_log,
-            if is_match { &user_name } else { "None" },
-            dist
-        );
-
-        if !is_live {
-            let final_log = format!("DENIED [Spoofing] {}", debug_info);
+        if !response.face_live {
+            response.message = format!(
+                "Liveness failed: {:.2}% ({})",
+                response.face_liveness_score * 100.0,
+                face_info.provider
+            );
+            response.decision_stage = "liveness".into();
             self.log_access(
-                if is_match { Some(user_id) } else { None },
+                if response.face_match {
+                    Some(user_id)
+                } else {
+                    None
+                },
                 device_id,
                 false,
-                &final_log,
+                &format!("DENIED [Spoofing] {}", response.message),
             )
             .await;
-            return Ok(Response::new(AccessCheckResponse {
-                granted: false,
-                user_name: "Spoof Attempt".into(),
-                message: format!("Liveness Failed. {}", debug_info),
-            }));
+            return Ok(Response::new(response));
         }
 
-        if !is_match {
-            let final_log = format!("DENIED [Unknown User] {}", debug_info);
-            self.log_access(None, device_id, false, &final_log).await;
-            return Ok(Response::new(AccessCheckResponse {
-                granted: false,
-                user_name: "Unknown".into(),
-                message: format!("Unknown User. {}", debug_info),
-            }));
+        if !response.face_match {
+            response.message = format!("Face not matched (distance {:.3})", face_dist);
+            response.decision_stage = "face_match".into();
+            self.log_access(
+                None,
+                device_id,
+                false,
+                &format!("DENIED [Face] {}", response.message),
+            )
+            .await;
+            return Ok(Response::new(response));
         }
 
-        // 3. Check Permissions (Zone)
-        if device_id == self.test_device_id {
-            // Test Device
-            let final_log = format!("GRANTED [Test Device] {}", debug_info);
-            self.log_access(Some(user_id), device_id, true, &final_log)
+        // 3) Voice identification (optional but required for multimodal pass when provided)
+        if response.voice_provided {
+            let voice_res_opt = self.process_voice_embedding(&req.audio).await?;
+            let voice_emb = match voice_res_opt {
+                Some(v) => {
+                    response.voice_detected = true;
+                    v
+                }
+                None => {
+                    response.message = "Voice not detected".into();
+                    response.decision_stage = "voice_detection".into();
+                    self.log_access(
+                        Some(user_id),
+                        device_id,
+                        false,
+                        "DENIED [Voice] Voice not detected",
+                    )
+                    .await;
+                    return Ok(Response::new(response));
+                }
+            };
+
+            let voice_match = sqlx::query(
+                "SELECT (embedding <-> $1) as distance FROM voice_embeddings WHERE user_id = $2 LIMIT 1",
+            )
+            .bind(Vector::from(voice_emb))
+            .bind(user_id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| Status::internal(format!("DB voice error: {}", e)))?;
+
+            let voice_dist = voice_match
+                .and_then(|r| r.get::<Option<f64>, _>("distance"))
+                .unwrap_or(1.0);
+            response.voice_distance = voice_dist as f32;
+            response.voice_match = voice_dist < self.voice_similarity_threshold;
+
+            if !response.voice_match {
+                response.message = format!("Voice not matched (distance {:.3})", voice_dist);
+                response.decision_stage = "voice_match".into();
+                self.log_access(
+                    Some(user_id),
+                    device_id,
+                    false,
+                    &format!("DENIED [Voice] {}", response.message),
+                )
                 .await;
-            return Ok(Response::new(AccessCheckResponse {
-                granted: true,
-                user_name,
-                message: format!("Welcome (Test). {}", debug_info),
-            }));
+                return Ok(Response::new(response));
+            }
         }
 
-        // Find Zone and Room
+        // 4) Access policy check
+        if device_id == self.test_device_id {
+            response.granted = true;
+            response.message = "Welcome (Test Device)".into();
+            response.decision_stage = "granted".into();
+            response.final_confidence = if response.voice_provided { 0.95 } else { 0.85 };
+            self.log_access(
+                Some(user_id),
+                device_id,
+                true,
+                "GRANTED [Test Device] multimodal",
+            )
+            .await;
+            return Ok(Response::new(response));
+        }
+
         let zone_rec = sqlx::query(
             r#"
             SELECT r.id as room_id, r.zone_id, z.name as zone_name, r.name as room_name
@@ -659,17 +724,19 @@ impl Gatekeeper for GatewayService {
                 z.get::<String, _>("room_name"),
             ),
             None => {
-                let final_log = format!(
-                    "DENIED [Config Error] Device {} not in zone. {}",
-                    device_id, debug_info
-                );
-                self.log_access(Some(user_id), device_id, false, &final_log)
-                    .await;
-                return Err(Status::not_found("Device not found/assigned"));
+                response.message = "Device not found/assigned".into();
+                response.decision_stage = "device_config".into();
+                self.log_access(
+                    Some(user_id),
+                    device_id,
+                    false,
+                    "DENIED [Config] device not assigned",
+                )
+                .await;
+                return Ok(Response::new(response));
             }
         };
 
-        // Check Rules: user can be granted by zone OR by room
         let zone_rule_exists = sqlx::query(
             "SELECT 1 as exists FROM access_rules_zones WHERE user_id = $1 AND zone_id = $2",
         )
@@ -689,30 +756,46 @@ impl Gatekeeper for GatewayService {
         .map_err(|e| Status::internal(e.to_string()))?;
 
         if zone_rule_exists.is_some() || room_rule_exists.is_some() {
-            let final_log = format!(
-                "GRANTED [Zone: {}, Room: {}] {}",
-                zone_name, room_name, debug_info
-            );
-            self.log_access(Some(user_id), device_id, true, &final_log)
-                .await;
-            Ok(Response::new(AccessCheckResponse {
-                granted: true,
-                user_name,
-                message: format!("Welcome to {} / {}. {}", zone_name, room_name, debug_info),
-            }))
+            response.granted = true;
+            response.message = format!("Welcome to {} / {}", zone_name, room_name);
+            response.decision_stage = "granted".into();
+            let face_conf = (1.0 - response.face_distance).clamp(0.0, 1.0);
+            let voice_conf = if response.voice_provided {
+                (1.0 - response.voice_distance).clamp(0.0, 1.0)
+            } else {
+                1.0
+            };
+            response.final_confidence =
+                (0.4 * response.face_liveness_score + 0.35 * face_conf + 0.25 * voice_conf)
+                    .clamp(0.0, 1.0);
+            self.log_access(
+                Some(user_id),
+                device_id,
+                true,
+                &format!(
+                    "GRANTED [Zone: {}, Room: {}] face_dist={:.3} voice_dist={:.3} conf={:.2}",
+                    zone_name,
+                    room_name,
+                    response.face_distance,
+                    response.voice_distance,
+                    response.final_confidence
+                ),
+            )
+            .await;
         } else {
-            let final_log = format!(
-                "DENIED [Zone: {}, Room: {}] No rights. {}",
-                zone_name, room_name, debug_info
-            );
-            self.log_access(Some(user_id), device_id, false, &final_log)
-                .await;
-            Ok(Response::new(AccessCheckResponse {
-                granted: false,
-                user_name,
-                message: format!("Access Denied. {}", debug_info),
-            }))
+            response.granted = false;
+            response.message = format!("Access denied to {} / {}", zone_name, room_name);
+            response.decision_stage = "access_rules".into();
+            self.log_access(
+                Some(user_id),
+                device_id,
+                false,
+                &format!("DENIED [Rules] Zone: {}, Room: {}", zone_name, room_name),
+            )
+            .await;
         }
+
+        Ok(Response::new(response))
     }
 
     async fn get_logs(
@@ -1020,6 +1103,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .parse::<f64>()
         .expect("FACE_SIMILARITY_THRESHOLD must be a valid f64");
 
+    let voice_similarity_threshold = std::env::var("VOICE_SIMILARITY_THRESHOLD")
+        .unwrap_or_else(|_| "0.6".to_string())
+        .parse::<f64>()
+        .expect("VOICE_SIMILARITY_THRESHOLD must be a valid f64");
+
     let test_device_id = std::env::var("TEST_DEVICE_ID")
         .unwrap_or_else(|_| "9999".to_string())
         .parse::<i32>()
@@ -1032,6 +1120,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         audio_channel,
         vision_channel,
         face_similarity_threshold,
+        voice_similarity_threshold,
         test_device_id,
         shutdown_tx,
     );
