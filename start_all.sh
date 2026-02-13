@@ -8,14 +8,19 @@ pkill -f vision-worker
 pkill -f audio-worker
 sleep 2
 
-# Set Environment Variables for CUDA
-# Found libcublasLt.so.12 in /usr/local/lib/ollama/cuda_v12/
-export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/lib/ollama/cuda_v12/
-# NOTE: do not point ORT_DYLIB_PATH to CUDA toolkit dirs.
-# ort expects path to onnxruntime shared libs, not CUDA runtime libraries.
+# CUDA settings
+# NOTE:
+# - We do NOT override ORT_DYLIB_PATH here.
+# - We do NOT force custom CUDA toolkit paths by default, because mismatched libs
+#   can cause runtime errors like: cudaErrorSymbolNotFound.
 unset ORT_DYLIB_PATH
 
-# CUDA is enabled by default. Set VISION_FORCE_CPU=1 only for debugging fallback.
+# Optional: use CUDA libs from ollama bundle only when explicitly requested.
+if [ "${USE_OLLAMA_CUDA_LIBS:-0}" = "1" ]; then
+  export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/lib/ollama/cuda_v12/
+fi
+
+# CUDA is enabled by default. Set VISION_FORCE_CPU=1 only for fallback debugging.
 export VISION_FORCE_CPU=${VISION_FORCE_CPU:-0}
 
 echo "Starting Audio Worker..."

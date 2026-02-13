@@ -188,12 +188,18 @@ impl Audio for AudioService {
                 Tensor::from_array((vad_input_shape.clone(), vad_input_tensor_values.clone()))
                     .map_err(|e| Status::internal(format!("VAD input creation error: {}", e)))?;
 
-            // Some VAD exports require a second scalar input `sr` (sample rate).
-            let sr_value = Tensor::from_array((vec![1], vec![16000_f32]))
+            // Silero VAD ONNX in this project expects 3 inputs in order:
+            // 1) audio chunk [1, T] (float)
+            // 2) recurrent state [2, 1, 128] (float)
+            // 3) sample rate [1] (int64)
+            let state_value = Tensor::from_array((vec![2, 1, 128], vec![0.0_f32; 2 * 1 * 128]))
+                .map_err(|e| Status::internal(format!("VAD state tensor creation error: {}", e)))?;
+
+            let sr_value = Tensor::from_array((vec![1], vec![16000_i64]))
                 .map_err(|e| Status::internal(format!("VAD sr tensor creation error: {}", e)))?;
 
             let outputs = session
-                .run(inputs![input_value, sr_value])
+                .run(inputs![input_value, state_value, sr_value])
                 .map_err(|e| Status::internal(format!("VAD Inference error: {}", e)))?;
 
             // Output: (1, 2) prob.
