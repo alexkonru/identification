@@ -413,43 +413,58 @@ impl Vision for VisionService {
             .map_err(|e| Status::internal(format!("Ошибка создания тензора Ort (Yunet): {}", e)))
         };
 
-        let first_try = {
+        let outputs_yunet_vec = {
             let mut session_yunet = self
                 .models
                 .yunet
                 .lock()
                 .map_err(|_| Status::internal("Не удалось захватить мьютекс Yunet"))?;
             let input_value_yunet = build_yunet_input()?;
-            session_yunet.run(inputs![input_value_yunet])
-        };
-
-        let outputs_yunet = match first_try {
-            Ok(out) => out,
-            Err(e) => {
-                let err_text = e.to_string();
-                if is_cuda_runtime_failure(&err_text) {
-                    self.models.switch_to_cpu(&err_text).map_err(|se| {
-                        Status::internal(format!("Vision CPU fallback failed: {}", se))
-                    })?;
-                    let mut cpu_session =
-                        self.models.yunet.lock().map_err(|_| {
+            match session_yunet.run(inputs![input_value_yunet]) {
+                Ok(outputs_yunet) => {
+                    let outputs_yunet_value = &outputs_yunet[0];
+                    outputs_yunet_value
+                        .try_extract_tensor::<f32>()
+                        .map_err(|e| {
+                            Status::internal(format!("Ошибка извлечения тензора Yunet: {}", e))
+                        })?
+                        .1
+                        .to_vec()
+                }
+                Err(e) => {
+                    let err_text = e.to_string();
+                    if is_cuda_runtime_failure(&err_text) {
+                        self.models.switch_to_cpu(&err_text).map_err(|se| {
+                            Status::internal(format!("Vision CPU fallback failed: {}", se))
+                        })?;
+                        drop(session_yunet);
+                        let mut cpu_session = self.models.yunet.lock().map_err(|_| {
                             Status::internal("Не удалось захватить CPU мьютекс Yunet")
                         })?;
-                    let input_value_yunet = build_yunet_input()?;
-                    cpu_session.run(inputs![input_value_yunet]).map_err(|e2| {
-                        Status::internal(format!("Ошибка инференса Yunet (CPU fallback): {}", e2))
-                    })?
-                } else {
-                    return Err(Status::internal(format!("Ошибка инференса Yunet: {}", e)));
+                        let input_value_yunet = build_yunet_input()?;
+                        let outputs_yunet =
+                            cpu_session.run(inputs![input_value_yunet]).map_err(|e2| {
+                                Status::internal(format!(
+                                    "Ошибка инференса Yunet (CPU fallback): {}",
+                                    e2
+                                ))
+                            })?;
+                        let outputs_yunet_value = &outputs_yunet[0];
+                        outputs_yunet_value
+                            .try_extract_tensor::<f32>()
+                            .map_err(|e3| {
+                                Status::internal(format!("Ошибка извлечения тензора Yunet: {}", e3))
+                            })?
+                            .1
+                            .to_vec()
+                    } else {
+                        return Err(Status::internal(format!("Ошибка инференса Yunet: {}", e)));
+                    }
                 }
             }
         };
 
-        let outputs_yunet_value = &outputs_yunet[0];
-        let outputs_yunet_slice = outputs_yunet_value
-            .try_extract_tensor::<f32>()
-            .map_err(|e| Status::internal(format!("Ошибка извлечения тензора Yunet: {}", e)))?
-            .1; // Get the &[f32] slice
+        let outputs_yunet_slice = outputs_yunet_vec.as_slice();
 
         let detected_faces = decode_yunet_output(
             outputs_yunet_slice,
