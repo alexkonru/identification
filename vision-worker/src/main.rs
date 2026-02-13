@@ -576,9 +576,15 @@ impl Vision for VisionService {
 
         let is_live = liveness_score > 0.5;
 
+        let provider = self
+            .models
+            .provider
+            .lock()
+            .map(|v| v.clone())
+            .unwrap_or_else(|_| "unknown".to_string());
         debug!(
             "Обработка завершена. Liveness: {}, Detected: true, Provider: {}",
-            is_live, self.models.provider
+            is_live, provider
         );
 
         // Шаг 5: Возврат BioResult
@@ -634,10 +640,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let addr = "0.0.0.0:50052".parse()?;
-    info!(
-        "Vision Worker слушает на {} (Provider: {})",
-        addr, models.provider
-    );
+    let provider = models
+        .provider
+        .lock()
+        .map(|v| v.clone())
+        .unwrap_or_else(|_| "unknown".to_string());
+    info!("Vision Worker слушает на {} (Provider: {})", addr, provider);
 
     let (shutdown_tx, mut shutdown_rx) = mpsc::channel(1);
 
