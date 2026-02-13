@@ -147,12 +147,19 @@ class BiometryClient:
             if "audio_sample_rate" in field_map:
                 req_kwargs["audio_sample_rate"] = sample_rate
             access = self.stub.CheckAccess(biometry_pb2.CheckAccessRequest(**req_kwargs))
+            stage = getattr(access, "decision_stage", "decision")
+            face_live = getattr(access, "face_live", False)
+            face_liveness_score = getattr(access, "face_liveness_score", 0.0)
+            face_distance = getattr(access, "face_distance", 1.0)
+            voice_distance = getattr(access, "voice_distance", 1.0)
+            final_confidence = getattr(access, "final_confidence", 0.0)
+
             details.append(
-                f"[DECISION] stage={access.decision_stage}, granted={access.granted}, user={access.user_name}, msg={access.message}"
+                f"[DECISION] stage={stage}, granted={access.granted}, user={access.user_name}, msg={access.message}"
             )
             details.append(
-                f"[CONF] face_live={access.face_live}({access.face_liveness_score:.3f}) "
-                f"face_dist={access.face_distance:.3f}, voice_dist={access.voice_distance:.3f}, final={access.final_confidence:.3f}"
+                f"[CONF] face_live={face_live}({face_liveness_score:.3f}) "
+                f"face_dist={face_distance:.3f}, voice_dist={voice_distance:.3f}, final={final_confidence:.3f}"
             )
             return {
                 "ok": True,
@@ -162,11 +169,11 @@ class BiometryClient:
                 "vision_ok": vision_ok,
                 "audio_ok": audio_ok,
                 "details": details,
-                "stage": access.decision_stage,
-                "face_score": access.face_liveness_score,
-                "face_distance": access.face_distance,
-                "voice_distance": access.voice_distance,
-                "final_confidence": access.final_confidence,
+                "stage": stage,
+                "face_score": face_liveness_score,
+                "face_distance": face_distance,
+                "voice_distance": voice_distance,
+                "final_confidence": final_confidence,
             }
         except grpc.RpcError as e:
             details.append(f"[GATEWAY] RPC ERROR: {e.code().name} {e.details()}")
@@ -387,19 +394,6 @@ class InfrastructureTab(QWidget):
         layout.addWidget(right, 1)
         self.refresh_tree()
 
-    def open_operator_identification(self):
-        item = self.tree.currentItem()
-        if not item or item.childCount() > 0:
-            QMessageBox.information(self, "Выбор комнаты", "Сначала выбери конкретную комнату/камеру в дереве.")
-            return
-        room_id = item.data(0, Qt.ItemDataRole.UserRole)
-        devices = [d for d in self.client.list_devices() if d.room_id == room_id and d.device_type == 'camera']
-        if not devices:
-            QMessageBox.warning(self, "Нет камеры", "В выбранной комнате нет камеры.")
-            return
-        dlg = OperatorIdentificationDialog(self.client, devices[0], parent=self)
-        dlg.exec()
-
     def refresh_tree(self):
         self.tree.clear()
         try:
@@ -550,6 +544,7 @@ class MonitoringTab(QWidget):
         self.selected_device_id = None
         self.log_timer = QTimer()
         self.log_timer.timeout.connect(self.process_active_mode)
+        self.mic_stream = MicrophoneStream(sample_rate=16000, channels=1)
         self.setup_ui()
 
     def setup_ui(self):
@@ -579,14 +574,6 @@ class MonitoringTab(QWidget):
         self.video_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         center.addWidget(self.video_label)
 
-        btn_row = QHBoxLayout()
-        self.btn_start = QPushButton("▶ Запустить идентификацию")
-        self.btn_stop = QPushButton("⏹ Остановить")
-        self.btn_start.clicked.connect(lambda: self.log_timer.start(1200))
-        self.btn_stop.clicked.connect(self.log_timer.stop)
-        btn_row.addWidget(self.btn_start)
-        btn_row.addWidget(self.btn_stop)
-        center.addLayout(btn_row)
         layout.addLayout(center, 3)
 
         self.pipeline_log = QTextEdit()
@@ -599,16 +586,11 @@ class MonitoringTab(QWidget):
         self.log_timer.start(1200)  # always-on identification
 
     def capture_audio_raw(self, duration_s=1, sample_rate=16000):
-        cmd = [
-            "arecord", "-q", "-d", str(duration_s), "-r", str(sample_rate),
-            "-c", "1", "-f", "S16_LE", "-t", "raw", "-",
-        ]
-        try:
-            proc = subprocess.run(cmd, capture_output=True, check=True)
-            return proc.stdout
-        except Exception as e:
-            self.pipeline_log.append(f"[AUDIO] capture failed: {e}")
+        chunk = self.mic_stream.read_chunk(duration_s=duration_s)
+        if chunk is None:
+            self.pipeline_log.append("[AUDIO] capture failed: microphone stream unavailable")
             return None
+        return chunk
 
     def refresh_tree(self):
         self.tree.clear()
@@ -706,6 +688,50 @@ class MonitoringTab(QWidget):
                 )
             except Exception as e:
                 self.pipeline_log.append(f"[PIPELINE] ERROR: {e}")
+
+    def closeEvent(self, event):
+        self.stop_all_videos()
+        self.mic_stream.stop()
+        super().closeEvent(event)
+
+
+class MicrophoneStream:
+    def __init__(self, sample_rate=16000, channels=1):
+        self.sample_rate = sample_rate
+        self.channels = channels
+        self.proc = None
+
+    def start(self):
+        if self.proc is not None and self.proc.poll() is None:
+            return True
+        cmd = [
+            "arecord", "-q", "-r", str(self.sample_rate), "-c", str(self.channels),
+            "-f", "S16_LE", "-t", "raw", "-",
+        ]
+        try:
+            self.proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            return True
+        except Exception:
+            self.proc = None
+            return False
+
+    def read_chunk(self, duration_s=1):
+        if not self.start() or not self.proc or not self.proc.stdout:
+            return None
+        needed = int(self.sample_rate * duration_s * 2 * self.channels)  # int16 mono
+        data = self.proc.stdout.read(needed)
+        if not data or len(data) < needed:
+            return None
+        return data
+
+    def stop(self):
+        if self.proc and self.proc.poll() is None:
+            self.proc.terminate()
+            try:
+                self.proc.wait(timeout=1)
+            except Exception:
+                self.proc.kill()
+        self.proc = None
 
 
 class VideoThread(QThread):

@@ -15,8 +15,8 @@ use std::sync::{Arc, Mutex};
 use tonic::{transport::Server, Request, Response, Status};
 use tracing::{error, info, debug, warn};
 
-const YUNET_INPUT_WIDTH: u32 = 320;
-const YUNET_INPUT_HEIGHT: u32 = 240;
+const YUNET_INPUT_WIDTH: u32 = 640;
+const YUNET_INPUT_HEIGHT: u32 = 640;
 
 // --- Helper Structs for Yunet ---
 #[derive(Debug, Clone, Copy)]
@@ -264,20 +264,21 @@ impl Vision for VisionService {
 
         // --- Шаг 2: Обнаружение лица с Yunet ---
         let resized_yunet = image::imageops::resize(&rgb_img, YUNET_INPUT_WIDTH, YUNET_INPUT_HEIGHT, FilterType::Triangle);
-        let mut input_tensor_yunet = Array4::<f32>::zeros((1, YUNET_INPUT_HEIGHT as usize, YUNET_INPUT_WIDTH as usize, 3));
+        // YuNet in this project expects NCHW: [1, 3, 640, 640]
+        let mut input_tensor_yunet = Array4::<f32>::zeros((1, 3, YUNET_INPUT_HEIGHT as usize, YUNET_INPUT_WIDTH as usize));
 
         for (x, y, pixel) in resized_yunet.enumerate_pixels() {
              let r = pixel[0] as f32;
              let g = pixel[1] as f32;
              let b = pixel[2] as f32;
              // Normalize to 0-1
-             input_tensor_yunet[[0, y as usize, x as usize, 0]] = r / 255.0;
-             input_tensor_yunet[[0, y as usize, x as usize, 1]] = g / 255.0;
-             input_tensor_yunet[[0, y as usize, x as usize, 2]] = b / 255.0;
+             input_tensor_yunet[[0, 0, y as usize, x as usize]] = r / 255.0;
+             input_tensor_yunet[[0, 1, y as usize, x as usize]] = g / 255.0;
+             input_tensor_yunet[[0, 2, y as usize, x as usize]] = b / 255.0;
         }
-        
+
         let (data_vec_yunet, _) = input_tensor_yunet.into_raw_vec_and_offset();
-        let input_value_yunet = Tensor::from_array((vec![1, YUNET_INPUT_HEIGHT as i64, YUNET_INPUT_WIDTH as i64, 3], data_vec_yunet))
+        let input_value_yunet = Tensor::from_array((vec![1, 3, YUNET_INPUT_HEIGHT as i64, YUNET_INPUT_WIDTH as i64], data_vec_yunet))
             .map_err(|e| Status::internal(format!("Ошибка создания тензора Ort (Yunet): {}", e)))?;
 
         let mut session_yunet = self.models.yunet.lock()

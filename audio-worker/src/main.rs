@@ -180,7 +180,12 @@ impl Audio for AudioService {
             let input_value = Tensor::from_array((vad_input_shape.clone(), vad_input_tensor_values.clone()))
                  .map_err(|e| Status::internal(format!("VAD input creation error: {}", e)))?;
 
-            let outputs = session.run(inputs![input_value])
+            // Some VAD exports require a second scalar input `sr` (sample rate).
+            let sr_value = Tensor::from_array((vec![1], vec![16000_i64]))
+                .map_err(|e| Status::internal(format!("VAD sr tensor creation error: {}", e)))?;
+
+            let outputs = session
+                .run(inputs![input_value, sr_value])
                 .map_err(|e| Status::internal(format!("VAD Inference error: {}", e)))?;
 
             // Output: (1, 2) prob.
