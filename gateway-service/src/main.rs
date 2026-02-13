@@ -556,7 +556,21 @@ impl Gatekeeper for GatewayService {
         };
 
         // 1) Face + liveness
-        let face_res_opt = self.process_face_full(&req.image).await?;
+        let face_res_opt = match self.process_face_full(&req.image).await {
+            Ok(v) => v,
+            Err(e) => {
+                response.message = format!("Vision backend error: {}", e.message());
+                response.decision_stage = "vision_error".into();
+                self.log_access(
+                    None,
+                    device_id,
+                    false,
+                    &format!("DENIED [VisionError] {}", response.message),
+                )
+                .await;
+                return Ok(Response::new(response));
+            }
+        };
         let face_info = match face_res_opt {
             Some(info) => info,
             None => {
@@ -637,7 +651,21 @@ impl Gatekeeper for GatewayService {
 
         // 3) Voice identification (optional but required for multimodal pass when provided)
         if response.voice_provided {
-            let voice_res_opt = self.process_voice_embedding(&req.audio).await?;
+            let voice_res_opt = match self.process_voice_embedding(&req.audio).await {
+                Ok(v) => v,
+                Err(e) => {
+                    response.message = format!("Audio backend error: {}", e.message());
+                    response.decision_stage = "audio_error".into();
+                    self.log_access(
+                        Some(user_id),
+                        device_id,
+                        false,
+                        &format!("DENIED [AudioError] {}", response.message),
+                    )
+                    .await;
+                    return Ok(Response::new(response));
+                }
+            };
             let voice_emb = match voice_res_opt {
                 Some(v) => {
                     response.voice_detected = true;

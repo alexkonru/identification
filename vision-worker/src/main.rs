@@ -21,6 +21,10 @@ use tracing::{debug, error, info, warn};
 const YUNET_INPUT_WIDTH: u32 = 640;
 const YUNET_INPUT_HEIGHT: u32 = 640;
 
+fn is_cuda_runtime_failure(err: &str) -> bool {
+    err.contains("cudaError") || err.contains("CUDA error")
+}
+
 // --- Helper Structs for Yunet ---
 #[derive(Debug, Clone, Copy)]
 struct Face {
@@ -401,31 +405,37 @@ impl Vision for VisionService {
         }
 
         let (data_vec_yunet, _) = input_tensor_yunet.into_raw_vec_and_offset();
-        let input_value_yunet = Tensor::from_array((
-            vec![1, 3, YUNET_INPUT_HEIGHT as i64, YUNET_INPUT_WIDTH as i64],
-            data_vec_yunet,
-        ))
-        .map_err(|e| Status::internal(format!("Ошибка создания тензора Ort (Yunet): {}", e)))?;
+        let build_yunet_input = || {
+            Tensor::from_array((
+                vec![1, 3, YUNET_INPUT_HEIGHT as i64, YUNET_INPUT_WIDTH as i64],
+                data_vec_yunet.clone(),
+            ))
+            .map_err(|e| Status::internal(format!("Ошибка создания тензора Ort (Yunet): {}", e)))
+        };
 
-        let mut session_yunet = self
-            .models
-            .yunet
-            .lock()
-            .map_err(|_| Status::internal("Не удалось захватить мьютекс Yunet"))?;
+        let first_try = {
+            let mut session_yunet = self
+                .models
+                .yunet
+                .lock()
+                .map_err(|_| Status::internal("Не удалось захватить мьютекс Yunet"))?;
+            let input_value_yunet = build_yunet_input()?;
+            session_yunet.run(inputs![input_value_yunet])
+        };
 
-        let outputs_yunet = match session_yunet.run(inputs![input_value_yunet]) {
+        let outputs_yunet = match first_try {
             Ok(out) => out,
             Err(e) => {
                 let err_text = e.to_string();
-                if err_text.contains("cudaErrorSymbolNotFound") {
+                if is_cuda_runtime_failure(&err_text) {
                     self.models.switch_to_cpu(&err_text).map_err(|se| {
                         Status::internal(format!("Vision CPU fallback failed: {}", se))
                     })?;
-                    drop(session_yunet);
                     let mut cpu_session =
                         self.models.yunet.lock().map_err(|_| {
                             Status::internal("Не удалось захватить CPU мьютекс Yunet")
                         })?;
+                    let input_value_yunet = build_yunet_input()?;
                     cpu_session.run(inputs![input_value_yunet]).map_err(|e2| {
                         Status::internal(format!("Ошибка инференса Yunet (CPU fallback): {}", e2))
                     })?

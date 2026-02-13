@@ -85,7 +85,6 @@ fn resample(input: &[f32], from_rate: u32, to_rate: u32) -> Result<Vec<f32>> {
 // --- ModelStore ---
 
 struct ModelStore {
-    vad: Mutex<Session>,
     aasist: Mutex<Session>,
     ecapa: Mutex<Session>,
 }
@@ -98,14 +97,8 @@ impl ModelStore {
 
         info!("Loading models from {}", models_dir);
 
-        let vad_path = Path::new(models_dir).join("silero_vad.onnx");
         let aasist_path = Path::new(models_dir).join("aasist.onnx");
         let ecapa_path = Path::new(models_dir).join("voxceleb_ECAPA512_LM.onnx");
-
-        let vad = builder
-            .clone()
-            .commit_from_file(&vad_path)
-            .with_context(|| format!("Failed to load VAD from {:?}", vad_path))?;
 
         let aasist = builder
             .clone()
@@ -118,7 +111,6 @@ impl ModelStore {
             .with_context(|| format!("Failed to load ECAPA from {:?}", ecapa_path))?;
 
         Ok(Self {
-            vad: Mutex::new(vad),
             aasist: Mutex::new(aasist),
             ecapa: Mutex::new(ecapa),
         })
@@ -173,8 +165,7 @@ impl Audio for AudioService {
             model_input_samples.truncate(TARGET_AUDIO_SAMPLE_LENGTH);
         }
 
-        // Prepare tensor for VAD (variable length)
-        let vad_input_shape = vec![1, model_input_samples.len() as i64];
+        // Keep a copy for speech-energy pre-check
         let vad_input_tensor_values = model_input_samples.clone();
 
         // Prepare tensor for AASIST and ECAPA (fixed length)
