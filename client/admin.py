@@ -139,9 +139,14 @@ class BiometryClient:
             details.append("[AUDIO] skipped")
 
         try:
-            access = self.stub.CheckAccess(
-                biometry_pb2.CheckAccessRequest(device_id=device_id, image=image_bytes, audio=audio_bytes or b"", audio_sample_rate=sample_rate)
-            )
+            req_kwargs = {"device_id": device_id, "image": image_bytes}
+            req_fields = getattr(biometry_pb2.CheckAccessRequest, "DESCRIPTOR", None)
+            field_map = req_fields.fields_by_name if req_fields else {}
+            if "audio" in field_map:
+                req_kwargs["audio"] = audio_bytes or b""
+            if "audio_sample_rate" in field_map:
+                req_kwargs["audio_sample_rate"] = sample_rate
+            access = self.stub.CheckAccess(biometry_pb2.CheckAccessRequest(**req_kwargs))
             details.append(
                 f"[DECISION] stage={access.decision_stage}, granted={access.granted}, user={access.user_name}, msg={access.message}"
             )
@@ -539,47 +544,64 @@ class HelpTab(QWidget):
 
 class MonitoringTab(QWidget):
     def __init__(self, client):
-        super().__init__(); self.client = client; self.active_cameras = {}; self.log_timer = QTimer()
-        self.log_timer.timeout.connect(self.process_active_mode); self.setup_ui()
-    
+        super().__init__()
+        self.client = client
+        self.active_cameras = {}
+        self.selected_device_id = None
+        self.log_timer = QTimer()
+        self.log_timer.timeout.connect(self.process_active_mode)
+        self.setup_ui()
+
     def setup_ui(self):
-        layout = QHBoxLayout(self); left = QVBoxLayout()
-        self.tree = QTreeWidget(); self.tree.setHeaderHidden(True); self.tree.currentItemChanged.connect(self.on_room_select)
-        left.addWidget(QLabel("<b>Помещения:</b>")); left.addWidget(self.tree)
-        self.chk_active = QCheckBox("🚀 Live ID (Активный режим)"); self.chk_active.setToolTip("Клиент сам отправляет кадры на сервер")
-        self.chk_mic = QCheckBox("🎤 Использовать микрофон в пайплайне")
-        self.chk_mic.setToolTip("Клиент пишет короткий raw-аудиофрагмент через arecord и отправляет в audio-worker")
-        left.addWidget(self.chk_active)
-        left.addWidget(self.chk_mic)
-        btn = QPushButton("🔄 Обновить"); btn.clicked.connect(self.refresh_tree); left.addWidget(btn)
-        self.btn_open_id = QPushButton("🪪 Окно идентификации оператора")
-        self.btn_open_id.clicked.connect(self.open_operator_identification)
-        left.addWidget(self.btn_open_id)
+        layout = QHBoxLayout(self)
+
+        left = QVBoxLayout()
+        self.tree = QTreeWidget()
+        self.tree.setHeaderHidden(True)
+        self.tree.currentItemChanged.connect(self.on_select)
+        left.addWidget(QLabel("<b>Помещения и устройства:</b>"))
+        left.addWidget(self.tree)
+
+        self.btn_refresh = QPushButton("🔄 Обновить список инфраструктуры")
+        self.btn_refresh.clicked.connect(self.refresh_tree)
+        left.addWidget(self.btn_refresh)
+
+        self.btn_reconnect = QPushButton("🔌 Переподключить выбранную камеру")
+        self.btn_reconnect.clicked.connect(self.reconnect_selected_camera)
+        left.addWidget(self.btn_reconnect)
+        left.addStretch()
         layout.addLayout(left, 1)
-        self.video_container = QWidget(); self.grid_layout = QGridLayout(self.video_container)
-        scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setWidget(self.video_container); layout.addWidget(scroll, 3)
+
+        center = QVBoxLayout()
+        self.video_label = QLabel("Выбери устройство-камеру слева")
+        self.video_label.setMinimumSize(800, 600)  # 4:3 area
+        self.video_label.setStyleSheet("background-color: black; border: 1px solid #555;")
+        self.video_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        center.addWidget(self.video_label)
+
+        btn_row = QHBoxLayout()
+        self.btn_start = QPushButton("▶ Запустить идентификацию")
+        self.btn_stop = QPushButton("⏹ Остановить")
+        self.btn_start.clicked.connect(lambda: self.log_timer.start(1200))
+        self.btn_stop.clicked.connect(self.log_timer.stop)
+        btn_row.addWidget(self.btn_start)
+        btn_row.addWidget(self.btn_stop)
+        center.addLayout(btn_row)
+        layout.addLayout(center, 3)
+
         self.pipeline_log = QTextEdit()
         self.pipeline_log.setReadOnly(True)
         self.pipeline_log.setMinimumWidth(420)
-        self.pipeline_log.setPlaceholderText("Здесь будут отображаться шаги пайплайна идентификации...")
+        self.pipeline_log.setPlaceholderText("Здесь отображается полный пайплайн: liveness -> face -> voice -> policy -> decision")
         layout.addWidget(self.pipeline_log, 2)
-        self.refresh_tree(); self.log_timer.start(1000)
+
+        self.refresh_tree()
+        self.log_timer.start(1200)  # always-on identification
 
     def capture_audio_raw(self, duration_s=1, sample_rate=16000):
         cmd = [
-            "arecord",
-            "-q",
-            "-d",
-            str(duration_s),
-            "-r",
-            str(sample_rate),
-            "-c",
-            "1",
-            "-f",
-            "S16_LE",
-            "-t",
-            "raw",
-            "-",
+            "arecord", "-q", "-d", str(duration_s), "-r", str(sample_rate),
+            "-c", "1", "-f", "S16_LE", "-t", "raw", "-",
         ]
         try:
             proc = subprocess.run(cmd, capture_output=True, check=True)
@@ -588,186 +610,160 @@ class MonitoringTab(QWidget):
             self.pipeline_log.append(f"[AUDIO] capture failed: {e}")
             return None
 
-    def open_operator_identification(self):
-        item = self.tree.currentItem()
-        if not item or item.childCount() > 0:
-            QMessageBox.information(self, "Выбор комнаты", "Сначала выбери конкретную комнату/камеру в дереве.")
-            return
-        room_id = item.data(0, Qt.ItemDataRole.UserRole)
-        devices = [d for d in self.client.list_devices() if d.room_id == room_id and d.device_type == 'camera']
-        if not devices:
-            QMessageBox.warning(self, "Нет камеры", "В выбранной комнате нет камеры.")
-            return
-        dlg = OperatorIdentificationDialog(self.client, devices[0], parent=self)
-        dlg.exec()
-
     def refresh_tree(self):
         self.tree.clear()
         try:
-            zones = self.client.list_zones(); rooms = self.client.list_rooms(); z_map = {z.id: QTreeWidgetItem([z.name]) for z in zones}
+            zones = self.client.list_zones()
+            rooms = self.client.list_rooms()
+            devices = self.client.list_devices()
+            z_map = {z.id: QTreeWidgetItem([f"{z.name}"]) for z in zones}
+            r_map = {}
             for r in rooms:
-                item = QTreeWidgetItem([r.name]); item.setData(0, Qt.ItemDataRole.UserRole, r.id)
-                if r.zone_id in z_map: z_map[r.zone_id].addChild(item)
-            for z in z_map.values(): self.tree.addTopLevelItem(z); z.setExpanded(True)
-        except: pass
+                room_item = QTreeWidgetItem([f"{r.name}"])
+                room_item.setData(0, Qt.ItemDataRole.UserRole, ("room", r.id))
+                r_map[r.id] = room_item
+                if r.zone_id in z_map:
+                    z_map[r.zone_id].addChild(room_item)
 
-    def on_room_select(self, current, prev=None):
+            for d in devices:
+                if d.room_id in r_map and d.device_type == 'camera':
+                    d_item = QTreeWidgetItem([f"📷 {d.name} ({d.connection_string})"])
+                    d_item.setData(0, Qt.ItemDataRole.UserRole, ("device", d))
+                    r_map[d.room_id].addChild(d_item)
+
+            for z in z_map.values():
+                self.tree.addTopLevelItem(z)
+                z.setExpanded(True)
+        except Exception as e:
+            self.pipeline_log.append(f"[UI] refresh error: {e}")
+
+    def on_select(self, current, _prev=None):
         self.stop_all_videos()
-        while self.grid_layout.count():
-            item = self.grid_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-        
-        if not current or current.childCount() > 0: return
-        room_id = current.data(0, Qt.ItemDataRole.UserRole)
-        try:
-            devices = [d for d in self.client.list_devices() if d.room_id == room_id and d.device_type == 'camera']
-            if not devices: self.grid_layout.addWidget(QLabel("Нет камер"), 0, 0); return
-            for i, dev in enumerate(devices):
-                lbl = QLabel(f"Loading {dev.name}..."); lbl.setMinimumSize(320, 240); lbl.setStyleSheet("background-color: black; border: 1px solid #555;"); self.grid_layout.addWidget(lbl, i//2, i%2)
-                t = VideoThread(dev.connection_string, dev.id)
-                t.frame_ready.connect(lambda img, l=lbl: l.setPixmap(QPixmap.fromImage(img).scaled(l.size(), Qt.AspectRatioMode.KeepAspectRatio)))
-                t.start(); self.active_cameras[dev.id] = t
-        except: pass
+        if not current:
+            return
+        data = current.data(0, Qt.ItemDataRole.UserRole)
+        if not data or data[0] != "device":
+            self.selected_device_id = None
+            self.video_label.setText("Выбери устройство-камеру слева")
+            return
+
+        dev = data[1]
+        self.selected_device_id = dev.id
+        t = VideoThread(dev.connection_string, dev.id)
+        t.frame_ready.connect(self._show_frame)
+        t.status_msg.connect(lambda msg: self.pipeline_log.append(f"[CAMERA] {msg}"))
+        t.start()
+        self.active_cameras[dev.id] = t
+
+    def _show_frame(self, img):
+        pix = QPixmap.fromImage(img)
+        self.video_label.setPixmap(
+            pix.scaled(self.video_label.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+        )
+
+    def reconnect_selected_camera(self):
+        item = self.tree.currentItem()
+        if item:
+            self.on_select(item)
 
     def stop_all_videos(self):
-        for t in self.active_cameras.values(): t.stop(); t.wait()
+        for t in self.active_cameras.values():
+            t.stop()
+            t.wait()
         self.active_cameras.clear()
 
     def restart_videos(self):
         item = self.tree.currentItem()
-        if item: self.on_room_select(item)
+        if item:
+            self.on_select(item)
 
     def process_active_mode(self):
-        if self.chk_active.isChecked():
-            # Active Mode: Send frames
-            audio_bytes = None
-            if self.chk_mic.isChecked():
-                audio_bytes = self.capture_audio_raw(duration_s=1, sample_rate=16000)
-
-            for dev_id, t in self.active_cameras.items():
-                frame = t.get_frame_bytes()
-                if frame:
-                    try:
-                        result = self.client.run_identification_pipeline(dev_id, frame, audio_bytes=audio_bytes)
-                        msg = f"{result['user_name']}: {'OK' if result['granted'] else 'NO'}\n{result['message']}"
-                        color = (0, 255, 0) if result['granted'] else (0, 0, 255)
-                        t.set_overlay(msg, color)
-
-                        self.pipeline_log.clear()
-                        self.pipeline_log.append(f"Device ID: {dev_id}")
-                        self.pipeline_log.append("=" * 50)
-                        for line in result["details"]:
-                            self.pipeline_log.append(line)
-                        self.pipeline_log.append("=" * 50)
-                        self.pipeline_log.append(
-                            f"RESULT: {'GRANTED' if result['granted'] else 'DENIED'} | STAGE={result['stage']} | "
-                            f"VISION_OK={result['vision_ok']} | AUDIO_OK={result['audio_ok']} | CONF={result['final_confidence']:.3f}"
-                        )
-                    except Exception as e:
-                        self.pipeline_log.append(f"[PIPELINE] ERROR: {e}")
-        else:
-            # Passive Mode: Check logs
-            try:
-                logs = self.client.get_logs(limit=1)
-                if logs and self.active_cameras:
-                    log = logs[0]
-                    # Simple heuristic: show log if it's recent (TODO: check timestamp)
-                    msg = f"{log.user_name}: {'OK' if log.access_granted else 'NO'}\n{log.details}"
-                    color = (0, 255, 0) if log.access_granted else (0, 0, 255)
-                    for t in self.active_cameras.values(): t.set_overlay(msg, color)
-            except: pass
-
-class OperatorIdentificationDialog(QDialog):
-    def __init__(self, client, device, parent=None):
-        super().__init__(parent)
-        self.client = client
-        self.device = device
-        self.setWindowTitle(f"Идентификация оператора: {device.name}")
-        self.resize(900, 650)
-
-        layout = QVBoxLayout(self)
-        self.video_label = QLabel("Камера запускается...")
-        self.video_label.setMinimumSize(640, 360)
-        self.video_label.setStyleSheet("background-color: black;")
-        layout.addWidget(self.video_label)
-
-        self.log = QTextEdit()
-        self.log.setReadOnly(True)
-        layout.addWidget(self.log)
-
-        self.chk_mic = QCheckBox("🎤 Активный микрофон")
-        self.chk_mic.setChecked(True)
-        layout.addWidget(self.chk_mic)
-
-        controls = QHBoxLayout()
-        self.btn_start = QPushButton("▶ Запустить пайплайн")
-        self.btn_stop = QPushButton("⏹ Остановить")
-        controls.addWidget(self.btn_start)
-        controls.addWidget(self.btn_stop)
-        layout.addLayout(controls)
-
-        self.thread = VideoThread(device.connection_string, device.id)
-        self.thread.frame_ready.connect(lambda img: self.video_label.setPixmap(QPixmap.fromImage(img).scaled(self.video_label.size(), Qt.AspectRatioMode.KeepAspectRatio)))
-        self.thread.start()
-
-        self.timer = QTimer(self)
-        self.timer.timeout.connect(self.run_pipeline_tick)
-
-        self.btn_start.clicked.connect(lambda: self.timer.start(1300))
-        self.btn_stop.clicked.connect(self.timer.stop)
-
-    def run_pipeline_tick(self):
-        frame = self.thread.get_frame_bytes()
-        if not frame:
+        # Always active: always use mic + camera for pipeline
+        if not self.active_cameras:
             return
-        audio = None
-        if self.chk_mic.isChecked():
-            audio = self.parent().capture_audio_raw(duration_s=1, sample_rate=16000) if hasattr(self.parent(), 'capture_audio_raw') else None
-        result = self.client.run_identification_pipeline(self.device.id, frame, audio_bytes=audio)
 
-        self.log.clear()
-        self.log.append(f"Device: {self.device.id} ({self.device.name})")
-        self.log.append("=" * 60)
-        for line in result['details']:
-            self.log.append(line)
-        self.log.append("=" * 60)
-        self.log.append(
-            f"RESULT: {'GRANTED' if result['granted'] else 'DENIED'} | STAGE={result['stage']} | "
-            f"CONF={result['final_confidence']:.3f}"
-        )
+        audio_bytes = self.capture_audio_raw(duration_s=1, sample_rate=16000)
 
-    def closeEvent(self, event):
-        self.timer.stop()
-        self.thread.stop()
-        self.thread.wait()
-        super().closeEvent(event)
+        for dev_id, t in self.active_cameras.items():
+            frame = t.get_frame_bytes()
+            if not frame:
+                continue
+            try:
+                result = self.client.run_identification_pipeline(dev_id, frame, audio_bytes=audio_bytes)
+                msg = f"{result['user_name']}: {'OK' if result['granted'] else 'NO'}\n{result['message']}"
+                color = (0, 255, 0) if result['granted'] else (0, 0, 255)
+                t.set_overlay(msg, color)
+
+                self.pipeline_log.clear()
+                self.pipeline_log.append(f"Device ID: {dev_id}")
+                self.pipeline_log.append("=" * 50)
+                for line in result["details"]:
+                    self.pipeline_log.append(line)
+                self.pipeline_log.append("=" * 50)
+                self.pipeline_log.append(
+                    f"RESULT: {'GRANTED' if result['granted'] else 'DENIED'} | STAGE={result['stage']} | "
+                    f"VISION_OK={result['vision_ok']} | AUDIO_OK={result['audio_ok']} | CONF={result['final_confidence']:.3f}"
+                )
+            except Exception as e:
+                self.pipeline_log.append(f"[PIPELINE] ERROR: {e}")
+
 
 class VideoThread(QThread):
     frame_ready = pyqtSignal(QImage)
+    status_msg = pyqtSignal(str)
+
     def __init__(self, source, dev_id):
-        super().__init__(); self.source = int(source) if str(source).isdigit() else source; self.dev_id = dev_id; self.running = True; self.overlay = ("", (0, 255, 0), 0)
-        self.mutex = QMutex(); self.current_frame = None
+        super().__init__()
+        self.source = int(source) if str(source).isdigit() else source
+        self.dev_id = dev_id
+        self.running = True
+        self.overlay = ("", (0, 255, 0), 0)
+        self.mutex = QMutex()
+        self.current_frame = None
+
     def run(self):
         cap = cv2.VideoCapture(self.source)
+        if not cap.isOpened():
+            self.status_msg.emit(f"Не удалось открыть камеру: source={self.source}")
+            return
+
         while self.running:
             ret, frame = cap.read()
             if ret:
-                self.mutex.lock(); self.current_frame = frame.copy(); self.mutex.unlock()
+                self.mutex.lock()
+                self.current_frame = frame.copy()
+                self.mutex.unlock()
                 if self.overlay[2] > 0:
                     y0, dy = 50, 30
-                    for i, line in enumerate(self.overlay[0].split('\n')): cv2.putText(frame, line, (10, y0 + i*dy), cv2.FONT_HERSHEY_SIMPLEX, 0.7, self.overlay[1], 2)
+                    for i, line in enumerate(self.overlay[0].split('\n')):
+                        cv2.putText(frame, line, (10, y0 + i * dy), cv2.FONT_HERSHEY_SIMPLEX, 0.7, self.overlay[1], 2)
                     self.overlay = (self.overlay[0], self.overlay[1], self.overlay[2] - 1)
-                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB); h, w, ch = rgb.shape; img = QImage(rgb.data, w, h, ch*w, QImage.Format.Format_RGB888); self.frame_ready.emit(img)
-            else: self.msleep(100)
+
+                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                h, w, ch = rgb.shape
+                img = QImage(rgb.data, w, h, ch * w, QImage.Format.Format_RGB888)
+                self.frame_ready.emit(img)
+            else:
+                self.status_msg.emit("Поток камеры недоступен")
+                self.msleep(200)
             self.msleep(30)
         cap.release()
-    def stop(self): self.running = False
-    def set_overlay(self, text, color): self.overlay = (text, color, 60)
+
+    def stop(self):
+        self.running = False
+
+    def set_overlay(self, text, color):
+        self.overlay = (text, color, 60)
+
     def get_frame_bytes(self):
-        self.mutex.lock(); f = self.current_frame; self.mutex.unlock()
-        if f is not None: _, enc = cv2.imencode('.jpg', f); return enc.tobytes()
+        self.mutex.lock()
+        f = self.current_frame
+        self.mutex.unlock()
+        if f is not None:
+            _, enc = cv2.imencode('.jpg', f)
+            return enc.tobytes()
         return None
+
 
 class AdminApp(QMainWindow):
     def __init__(self, client):
