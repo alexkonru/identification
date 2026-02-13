@@ -1,19 +1,19 @@
 use anyhow::{Context, Result};
+use image::{ImageBuffer, imageops::FilterType};
 use ndarray::Array4;
-use image::{imageops::FilterType, ImageBuffer};
 use ort::{
     inputs,
-    session::{builder::GraphOptimizationLevel, Session, builder::SessionBuilder},
+    session::{Session, builder::GraphOptimizationLevel, builder::SessionBuilder},
     value::Tensor,
 };
 use shared::biometry::{
+    BioResult, Empty, ImageFrame, ServiceStatus,
     vision_server::{Vision, VisionServer},
-    BioResult, ImageFrame, ServiceStatus, Empty,
 };
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use tonic::{transport::Server, Request, Response, Status};
-use tracing::{error, info, debug, warn};
+use tonic::{Request, Response, Status, transport::Server};
+use tracing::{debug, error, info, warn};
 
 const YUNET_INPUT_WIDTH: u32 = 640;
 const YUNET_INPUT_HEIGHT: u32 = 640;
@@ -21,7 +21,7 @@ const YUNET_INPUT_HEIGHT: u32 = 640;
 // --- Helper Structs for Yunet ---
 #[derive(Debug, Clone, Copy)]
 struct Face {
-    bbox: [f32; 4], // x, y, w, h
+    bbox: [f32; 4],           // x, y, w, h
     landmarks: [[f32; 2]; 5], // right_eye, left_eye, nose, mouth_right, mouth_left
     score: f32,
 }
@@ -33,7 +33,13 @@ impl Face {
 }
 
 // --- Helper Functions for Yunet ---
-fn decode_yunet_output(output_slice: &[f32], original_width: u32, original_height: u32, score_threshold: f32, nms_threshold: f32) -> Result<Vec<Face>> {
+fn decode_yunet_output(
+    output_slice: &[f32],
+    original_width: u32,
+    original_height: u32,
+    score_threshold: f32,
+    nms_threshold: f32,
+) -> Result<Vec<Face>> {
     // Yunet output is typically [1, 1, N, 15] or [N, 15]
     // Each row: [x1, y1, x2, y2, score, right_eye_x, right_eye_y, ..., mouth_left_y]
     // The model gives the bbox as x1, y1, x2, y2 (top-left, bottom-right corners)
@@ -65,21 +71,29 @@ fn decode_yunet_output(output_slice: &[f32], original_width: u32, original_heigh
         let bbox = [x1, y1, x2 - x1, y2 - y1]; // x, y, w, h
 
         let landmarks = [
-            [data[4], data[5]], // right_eye
-            [data[6], data[7]], // left_eye
-            [data[8], data[9]], // nose
+            [data[4], data[5]],   // right_eye
+            [data[6], data[7]],   // left_eye
+            [data[8], data[9]],   // nose
             [data[10], data[11]], // mouth_right
             [data[12], data[13]], // mouth_left
         ];
 
-        faces.push(Face { bbox, landmarks, score });
+        faces.push(Face {
+            bbox,
+            landmarks,
+            score,
+        });
     }
 
     // Apply Non-Maximum Suppression (NMS) - simple version
     // For a more robust NMS, a dedicated NMS algorithm would be better.
     // This is a basic approach.
 
-    faces.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    faces.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     let mut suppressed = vec![false; faces.len()];
     let mut nms_faces = Vec::new();
@@ -163,25 +177,61 @@ impl ModelStore {
         let yunet_path = Path::new(models_dir).join("face_detection_yunet_2023mar.onnx");
 
         info!("Попытка загрузки моделей с CUDA...");
-        
-        let (yunet, arcface, liveness, used_provider, init_msg) = match builder_cuda_res {
-            Ok(builder_cuda) => {
-                 match Self::try_load(&builder_cuda, &yunet_path, &arcface_path, &liveness_path) {
-                    Ok(sessions) => {
-                        info!("Успешно загружено с CUDA!");
-                        (sessions.0, sessions.1, sessions.2, "CUDA".to_string(), "Initialized successfully with CUDA".to_string())
-                    },
-                    Err(e) => {
-                        warn!("CUDA Builder создан, но загрузка не удалась: {}. Переключение на CPU.", e);
-                        let (y, a, l, p) = Self::load_cpu(&yunet_path, &arcface_path, &liveness_path)?;
-                        (y, a, l, p, format!("CUDA init failed: {}. Fallback to CPU.", e))
+
+        let force_cpu = std::env::var("VISION_FORCE_CPU")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+
+        let (yunet, arcface, liveness, used_provider, init_msg) = if force_cpu {
+            warn!("VISION_FORCE_CPU enabled. Starting vision-worker on CPU.");
+            let (y, a, l, p) = Self::load_cpu(&yunet_path, &arcface_path, &liveness_path)?;
+            (y, a, l, p, "Forced CPU mode".to_string())
+        } else {
+            match builder_cuda_res {
+                Ok(builder_cuda) => {
+                    match Self::try_load(&builder_cuda, &yunet_path, &arcface_path, &liveness_path)
+                    {
+                        Ok(sessions) => {
+                            info!("Успешно загружено с CUDA!");
+                            (
+                                sessions.0,
+                                sessions.1,
+                                sessions.2,
+                                "CUDA".to_string(),
+                                "Initialized successfully with CUDA".to_string(),
+                            )
+                        }
+                        Err(e) => {
+                            warn!(
+                                "CUDA Builder создан, но загрузка не удалась: {}. Переключение на CPU.",
+                                e
+                            );
+                            let (y, a, l, p) =
+                                Self::load_cpu(&yunet_path, &arcface_path, &liveness_path)?;
+                            (
+                                y,
+                                a,
+                                l,
+                                p,
+                                format!("CUDA init failed: {}. Fallback to CPU.", e),
+                            )
+                        }
                     }
-                 }
-            },
-            Err(e) => {
-                warn!("Не удалось инициализировать CUDA провайдер: {}. Переключение на CPU.", e);
-                let (y, a, l, p) = Self::load_cpu(&yunet_path, &arcface_path, &liveness_path)?;
-                (y, a, l, p, format!("CUDA unavailable: {}. Fallback to CPU.", e))
+                }
+                Err(e) => {
+                    warn!(
+                        "Не удалось инициализировать CUDA провайдер: {}. Переключение на CPU.",
+                        e
+                    );
+                    let (y, a, l, p) = Self::load_cpu(&yunet_path, &arcface_path, &liveness_path)?;
+                    (
+                        y,
+                        a,
+                        l,
+                        p,
+                        format!("CUDA unavailable: {}. Fallback to CPU.", e),
+                    )
+                }
             }
         };
 
@@ -194,18 +244,27 @@ impl ModelStore {
         })
     }
 
-    fn load_cpu(yunet_path: &Path, arc_path: &Path, live_path: &Path) -> Result<(Session, Session, Session, String)> {
+    fn load_cpu(
+        yunet_path: &Path,
+        arc_path: &Path,
+        live_path: &Path,
+    ) -> Result<(Session, Session, Session, String)> {
         let builder_cpu = Session::builder()?
             .with_optimization_level(GraphOptimizationLevel::Level3)?
             .with_intra_threads(4)?;
-        
+
         let sessions = Self::try_load(&builder_cpu, yunet_path, arc_path, live_path)
             .context("Не удалось загрузить модели даже на CPU")?;
-            
+
         Ok((sessions.0, sessions.1, sessions.2, "CPU".to_string()))
     }
 
-    fn try_load(builder: &SessionBuilder, yunet_path: &Path, arc_path: &Path, live_path: &Path) -> Result<(Session, Session, Session)> {
+    fn try_load(
+        builder: &SessionBuilder,
+        yunet_path: &Path,
+        arc_path: &Path,
+        live_path: &Path,
+    ) -> Result<(Session, Session, Session)> {
         let yunet = builder
             .clone()
             .commit_from_file(yunet_path)
@@ -215,12 +274,12 @@ impl ModelStore {
             .clone()
             .commit_from_file(arc_path)
             .with_context(|| format!("Failed to load ArcFace from {:?}", arc_path))?;
-            
+
         let liveness = builder
             .clone()
             .commit_from_file(live_path)
             .with_context(|| format!("Failed to load Liveness from {:?}", live_path))?;
-            
+
         Ok((yunet, arcface, liveness))
     }
 }
@@ -255,36 +314,54 @@ impl Vision for VisionService {
         let frame = request.into_inner();
 
         // Шаг 1: Декодирование изображения
-        let img = image::load_from_memory(&frame.content)
-            .map_err(|e| Status::invalid_argument(format!("Не удалось декодировать изображение: {}", e)))?;
-        
+        let img = image::load_from_memory(&frame.content).map_err(|e| {
+            Status::invalid_argument(format!("Не удалось декодировать изображение: {}", e))
+        })?;
+
         let original_width = img.width();
         let original_height = img.height();
         let rgb_img = img.to_rgb8();
 
         // --- Шаг 2: Обнаружение лица с Yunet ---
-        let resized_yunet = image::imageops::resize(&rgb_img, YUNET_INPUT_WIDTH, YUNET_INPUT_HEIGHT, FilterType::Triangle);
+        let resized_yunet = image::imageops::resize(
+            &rgb_img,
+            YUNET_INPUT_WIDTH,
+            YUNET_INPUT_HEIGHT,
+            FilterType::Triangle,
+        );
         // YuNet in this project expects NCHW: [1, 3, 640, 640]
-        let mut input_tensor_yunet = Array4::<f32>::zeros((1, 3, YUNET_INPUT_HEIGHT as usize, YUNET_INPUT_WIDTH as usize));
+        let mut input_tensor_yunet = Array4::<f32>::zeros((
+            1,
+            3,
+            YUNET_INPUT_HEIGHT as usize,
+            YUNET_INPUT_WIDTH as usize,
+        ));
 
         for (x, y, pixel) in resized_yunet.enumerate_pixels() {
-             let r = pixel[0] as f32;
-             let g = pixel[1] as f32;
-             let b = pixel[2] as f32;
-             // Normalize to 0-1
-             input_tensor_yunet[[0, 0, y as usize, x as usize]] = r / 255.0;
-             input_tensor_yunet[[0, 1, y as usize, x as usize]] = g / 255.0;
-             input_tensor_yunet[[0, 2, y as usize, x as usize]] = b / 255.0;
+            let r = pixel[0] as f32;
+            let g = pixel[1] as f32;
+            let b = pixel[2] as f32;
+            // Normalize to 0-1
+            input_tensor_yunet[[0, 0, y as usize, x as usize]] = r / 255.0;
+            input_tensor_yunet[[0, 1, y as usize, x as usize]] = g / 255.0;
+            input_tensor_yunet[[0, 2, y as usize, x as usize]] = b / 255.0;
         }
 
         let (data_vec_yunet, _) = input_tensor_yunet.into_raw_vec_and_offset();
-        let input_value_yunet = Tensor::from_array((vec![1, 3, YUNET_INPUT_HEIGHT as i64, YUNET_INPUT_WIDTH as i64], data_vec_yunet))
-            .map_err(|e| Status::internal(format!("Ошибка создания тензора Ort (Yunet): {}", e)))?;
+        let input_value_yunet = Tensor::from_array((
+            vec![1, 3, YUNET_INPUT_HEIGHT as i64, YUNET_INPUT_WIDTH as i64],
+            data_vec_yunet,
+        ))
+        .map_err(|e| Status::internal(format!("Ошибка создания тензора Ort (Yunet): {}", e)))?;
 
-        let mut session_yunet = self.models.yunet.lock()
+        let mut session_yunet = self
+            .models
+            .yunet
+            .lock()
             .map_err(|_| Status::internal("Не удалось захватить мьютекс Yunet"))?;
 
-        let outputs_yunet = session_yunet.run(inputs![input_value_yunet])
+        let outputs_yunet = session_yunet
+            .run(inputs![input_value_yunet])
             .map_err(|e| Status::internal(format!("Ошибка инференса Yunet: {}", e)))?;
 
         let outputs_yunet_value = &outputs_yunet[0];
@@ -299,9 +376,14 @@ impl Vision for VisionService {
             original_height,
             0.9, // score_threshold (tunable)
             0.3, // nms_threshold (tunable)
-        ).map_err(|e| Status::internal(format!("Ошибка декодирования вывода Yunet: {}", e)))?;
+        )
+        .map_err(|e| Status::internal(format!("Ошибка декодирования вывода Yunet: {}", e)))?;
 
-        let Some(best_face) = detected_faces.into_iter().max_by(|a, b| a.area().partial_cmp(&b.area()).unwrap_or(std::cmp::Ordering::Equal)) else {
+        let Some(best_face) = detected_faces.into_iter().max_by(|a, b| {
+            a.area()
+                .partial_cmp(&b.area())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        }) else {
             warn!("Лицо не обнаружено");
             return Ok(Response::new(BioResult {
                 detected: false,
@@ -316,84 +398,106 @@ impl Vision for VisionService {
         // Crop the face
         let x = best_face.bbox[0].max(0.0).floor() as u32;
         let y = best_face.bbox[1].max(0.0).floor() as u32;
-        let w = best_face.bbox[2].min(original_width as f32 - x as f32).floor() as u32;
-        let h = best_face.bbox[3].min(original_height as f32 - y as f32).floor() as u32;
+        let w = best_face.bbox[2]
+            .min(original_width as f32 - x as f32)
+            .floor() as u32;
+        let h = best_face.bbox[3]
+            .min(original_height as f32 - y as f32)
+            .floor() as u32;
 
-        let cropped_face_img = ImageBuffer::from_fn(w, h, |px, py| {
-            rgb_img.get_pixel(x + px, y + py).to_owned()
-        });
+        let cropped_face_img =
+            ImageBuffer::from_fn(w, h, |px, py| rgb_img.get_pixel(x + px, y + py).to_owned());
 
         // --- Шаг 3: Распознавание (ArcFace) ---
-        let resized_arc = image::imageops::resize(&cropped_face_img, 112, 112, FilterType::Triangle);
+        let resized_arc =
+            image::imageops::resize(&cropped_face_img, 112, 112, FilterType::Triangle);
         let mut input_tensor_arc = Array4::<f32>::zeros((1, 112, 112, 3));
 
         for (x_i, y_i, pixel) in resized_arc.enumerate_pixels() {
-             let r = pixel[0] as f32;
-             let g = pixel[1] as f32;
-             let b = pixel[2] as f32;
-             // (x - 127.5) / 128.0
-             input_tensor_arc[[0, y_i as usize, x_i as usize, 0]] = (r - 127.5) / 128.0;
-             input_tensor_arc[[0, y_i as usize, x_i as usize, 1]] = (g - 127.5) / 128.0;
-             input_tensor_arc[[0, y_i as usize, x_i as usize, 2]] = (b - 127.5) / 128.0;
+            let r = pixel[0] as f32;
+            let g = pixel[1] as f32;
+            let b = pixel[2] as f32;
+            // (x - 127.5) / 128.0
+            input_tensor_arc[[0, y_i as usize, x_i as usize, 0]] = (r - 127.5) / 128.0;
+            input_tensor_arc[[0, y_i as usize, x_i as usize, 1]] = (g - 127.5) / 128.0;
+            input_tensor_arc[[0, y_i as usize, x_i as usize, 2]] = (b - 127.5) / 128.0;
         }
-        
-        let (data_vec_arc, _) = input_tensor_arc.into_raw_vec_and_offset();
-        let input_value_arc = Tensor::from_array((vec![1, 112, 112, 3], data_vec_arc))
-            .map_err(|e| Status::internal(format!("Ошибка создания тензора Ort (ArcFace): {}", e)))?;
 
-        let mut session_arc = self.models.arcface.lock()
+        let (data_vec_arc, _) = input_tensor_arc.into_raw_vec_and_offset();
+        let input_value_arc =
+            Tensor::from_array((vec![1, 112, 112, 3], data_vec_arc)).map_err(|e| {
+                Status::internal(format!("Ошибка создания тензора Ort (ArcFace): {}", e))
+            })?;
+
+        let mut session_arc = self
+            .models
+            .arcface
+            .lock()
             .map_err(|_| Status::internal("Не удалось захватить мьютекс ArcFace"))?;
 
-        let outputs_arc = session_arc.run(inputs![input_value_arc])
+        let outputs_arc = session_arc
+            .run(inputs![input_value_arc])
             .map_err(|e| Status::internal(format!("Ошибка инференса ArcFace: {}", e)))?;
 
-        let (_, embedding_slice) = outputs_arc[0].try_extract_tensor::<f32>()
-            .map_err(|e| Status::internal(format!("Ошибка извлечения результата ArcFace: {}", e)))?;
+        let (_, embedding_slice) = outputs_arc[0].try_extract_tensor::<f32>().map_err(|e| {
+            Status::internal(format!("Ошибка извлечения результата ArcFace: {}", e))
+        })?;
 
         let embedding_vec: Vec<f32> = embedding_slice.to_vec();
 
         // --- Шаг 4: Liveness (MiniFASNetV2) ---
-        let resized_live = image::imageops::resize(&cropped_face_img, 128, 128, FilterType::Triangle);
+        let resized_live =
+            image::imageops::resize(&cropped_face_img, 128, 128, FilterType::Triangle);
         let mut input_tensor_live = Array4::<f32>::zeros((1, 3, 128, 128));
-        
+
         for (x_i, y_i, pixel) in resized_live.enumerate_pixels() {
-             let r = pixel[0] as f32;
-             let g = pixel[1] as f32;
-             let b = pixel[2] as f32;
-             // 0-1
-             input_tensor_live[[0, 0, y_i as usize, x_i as usize]] = r / 255.0;
-             input_tensor_live[[0, 1, y_i as usize, x_i as usize]] = g / 255.0;
-             input_tensor_live[[0, 2, y_i as usize, x_i as usize]] = b / 255.0;
+            let r = pixel[0] as f32;
+            let g = pixel[1] as f32;
+            let b = pixel[2] as f32;
+            // 0-1
+            input_tensor_live[[0, 0, y_i as usize, x_i as usize]] = r / 255.0;
+            input_tensor_live[[0, 1, y_i as usize, x_i as usize]] = g / 255.0;
+            input_tensor_live[[0, 2, y_i as usize, x_i as usize]] = b / 255.0;
         }
-        
+
         let (data_vec_live, _) = input_tensor_live.into_raw_vec_and_offset();
-        let input_value_live = Tensor::from_array((vec![1, 3, 128, 128], data_vec_live))
-             .map_err(|e| Status::internal(format!("Ошибка создания тензора Ort (Liveness): {}", e)))?;
-             
-        let mut session_live = self.models.liveness.lock()
+        let input_value_live =
+            Tensor::from_array((vec![1, 3, 128, 128], data_vec_live)).map_err(|e| {
+                Status::internal(format!("Ошибка создания тензора Ort (Liveness): {}", e))
+            })?;
+
+        let mut session_live = self
+            .models
+            .liveness
+            .lock()
             .map_err(|_| Status::internal("Не удалось захватить мьютекс Liveness"))?;
-            
-        let outputs_live = session_live.run(inputs![input_value_live])
+
+        let outputs_live = session_live
+            .run(inputs![input_value_live])
             .map_err(|e| Status::internal(format!("Ошибка инференса Liveness: {}", e)))?;
-            
-        let (_, live_out) = outputs_live[0].try_extract_tensor::<f32>()
-             .map_err(|e| Status::internal(format!("Ошибка извлечения результата Liveness: {}", e)))?;
-             
+
+        let (_, live_out) = outputs_live[0].try_extract_tensor::<f32>().map_err(|e| {
+            Status::internal(format!("Ошибка извлечения результата Liveness: {}", e))
+        })?;
+
         let liveness_score = if live_out.len() >= 2 {
             // Softmax
             let exp_sum: f32 = live_out.iter().map(|x| x.exp()).sum();
             live_out[1].exp() / exp_sum
         } else {
-             live_out.get(0).cloned().unwrap_or(0.0)
+            live_out.get(0).cloned().unwrap_or(0.0)
         };
-        
+
         let is_live = liveness_score > 0.5;
 
-        debug!("Обработка завершена. Liveness: {}, Detected: true, Provider: {}", is_live, self.models.provider);
+        debug!(
+            "Обработка завершена. Liveness: {}, Detected: true, Provider: {}",
+            is_live, self.models.provider
+        );
 
         // Шаг 5: Возврат BioResult
         Ok(Response::new(BioResult {
-            detected: true, 
+            detected: true,
             is_live,
             liveness_score,
             embedding: embedding_vec,
@@ -439,7 +543,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let addr = "0.0.0.0:50052".parse()?;
-    info!("Vision Worker слушает на {} (Provider: {})", addr, models.provider);
+    info!(
+        "Vision Worker слушает на {} (Provider: {})",
+        addr, models.provider
+    );
 
     let (shutdown_tx, mut shutdown_rx) = mpsc::channel(1);
 

@@ -12,6 +12,8 @@ sleep 2
 # Found libcublasLt.so.12 in /usr/local/lib/ollama/cuda_v12/
 export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/lib/ollama/cuda_v12/
 export ORT_DYLIB_PATH=/usr/local/lib/ollama/cuda_v12/ # Optional, might help if ORT looks for providers here
+# Some environments have CUDA provider init but fail at runtime (cudaErrorSymbolNotFound).
+export VISION_FORCE_CPU=1
 
 echo "Starting Audio Worker..."
 nohup cargo run -p audio-worker > audio.log 2>&1 &
