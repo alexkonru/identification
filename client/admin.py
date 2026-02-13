@@ -338,7 +338,7 @@ class PersonnelTab(QWidget):
                 self.current_frame = frame
                 rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 h, w, ch = rgb.shape
-                img = QImage(rgb.data, w, h, ch*w, QImage.Format.Format_RGB888)
+                img = QImage(rgb.data, w, h, ch*w, QImage.Format.Format_RGB888).copy()
                 self.video_label.setPixmap(QPixmap.fromImage(img).scaled(self.video_label.size(), Qt.AspectRatioMode.KeepAspectRatio))
 
     def refresh_users(self):
@@ -709,7 +709,7 @@ class MicrophoneStream:
             "-f", "S16_LE", "-t", "raw", "-",
         ]
         try:
-            self.proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            self.proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
             return True
         except Exception:
             self.proc = None
@@ -767,7 +767,7 @@ class VideoThread(QThread):
 
                 rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 h, w, ch = rgb.shape
-                img = QImage(rgb.data, w, h, ch * w, QImage.Format.Format_RGB888)
+                img = QImage(rgb.data, w, h, ch * w, QImage.Format.Format_RGB888).copy()
                 self.frame_ready.emit(img)
             else:
                 self.status_msg.emit("Поток камеры недоступен")
