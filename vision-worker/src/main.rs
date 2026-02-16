@@ -63,7 +63,7 @@ fn build_cuda_builder(device_id: i32) -> Result<SessionBuilder> {
     Session::builder()?
         .with_optimization_level(GraphOptimizationLevel::Level3)?
         .with_intra_threads(4)?
-        .with_execution_providers([cuda.build().error_on_failure()])
+        .with_execution_providers([cuda.build().error_on_failure()])?
         .with_session_log_level(ort::logging::LogLevel::Warning)?
         .context("Failed to create session builder with CUDA execution provider")
 }
