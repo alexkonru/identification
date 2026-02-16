@@ -1,5 +1,15 @@
+<<<<<<< codex/review-database-structure-and-normalization-jm5fp2
 x-rust-service: &rust-service
   image: identification-rust-base:latest
+=======
+version: '3.9'
+
+x-rust-service: &rust-service
+  image: identification-rust-base:latest
+  build:
+    context: .
+    dockerfile: Dockerfile
+>>>>>>> master
   working_dir: /workspace/identification
   volumes:
     - .:/workspace/identification

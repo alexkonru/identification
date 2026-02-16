@@ -55,6 +55,11 @@ if ! wait_gateway; then
   docker compose logs --tail=120 gateway-service || true
   exit 1
 fi
+# Сборка образа (один общий image для всех rust-сервисов).
+docker compose build
+
+# Запуск сервисов в фоне.
+docker compose up -d db vision-worker audio-worker gateway-service
 
 # Печатаем состояние контейнеров.
 docker compose ps
