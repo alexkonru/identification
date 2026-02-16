@@ -10,6 +10,7 @@ use shared::biometry::{
     BioResult, Empty, ImageFrame, ServiceStatus,
     vision_server::{Vision, VisionServer},
 };
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::{
     Arc, Mutex,
@@ -23,6 +24,74 @@ const YUNET_INPUT_HEIGHT: u32 = 640;
 
 fn is_cuda_runtime_failure(err: &str) -> bool {
     err.contains("cudaError") || err.contains("CUDA error")
+}
+
+fn env_usize(name: &str) -> Option<usize> {
+    std::env::var(name).ok()?.trim().parse::<usize>().ok()
+}
+
+fn env_i32(name: &str) -> Option<i32> {
+    std::env::var(name).ok()?.trim().parse::<i32>().ok()
+}
+
+fn compact_cuda_error(err: &str) -> String {
+    let mut text = err
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    // Самая полезная часть ошибки загрузки CUDA EP обычно идёт после "with error:".
+    if let Some(idx) = text.find("with error:") {
+        text = text[(idx + "with error:".len())..].trim().to_string();
+    } else if let Some(idx) = text.find("FAIL :") {
+        text = text[(idx + "FAIL :".len())..].trim().to_string();
+    }
+
+    // Урезаем слишком длинные сообщения, чтобы WARN оставался читаемым.
+    const MAX_LEN: usize = 220;
+    if text.len() > MAX_LEN {
+        text.truncate(MAX_LEN);
+        text.push('…');
+    }
+
+    text
+}
+
+fn candidate_cuda_device_ids() -> Vec<i32> {
+    // Для гибридных систем (iGPU + dGPU) индекс CUDA-устройства в ONNX Runtime
+    // может не совпадать с ожидаемым "0". Поэтому если VISION_CUDA_DEVICE_ID
+    // не задан, перебираем небольшой диапазон индексов.
+    if let Some(device_id) = env_i32("VISION_CUDA_DEVICE_ID") {
+        vec![device_id]
+    } else {
+        vec![0, 1, 2, 3]
+    }
+}
+
+fn build_cuda_builder(device_id: i32) -> Result<SessionBuilder> {
+    let mut cuda =
+        ort::execution_providers::CUDAExecutionProvider::default().with_device_id(device_id);
+
+    if let Some(mem_limit_mb) = env_usize("VISION_CUDA_MEM_LIMIT_MB") {
+        if mem_limit_mb > 0 {
+            cuda = cuda.with_memory_limit(mem_limit_mb.saturating_mul(1024 * 1024));
+        }
+    }
+
+    // Снижаем пиковое потребление VRAM при инициализации.
+    cuda = cuda
+        .with_conv_algorithm_search(ort::execution_providers::cuda::ConvAlgorithmSearch::Heuristic)
+        .with_conv_max_workspace(false)
+        .with_arena_extend_strategy(ort::execution_providers::ArenaExtendStrategy::SameAsRequested);
+
+    Session::builder()?
+        .with_optimization_level(GraphOptimizationLevel::Level3)?
+        .with_intra_threads(4)?
+        .with_execution_providers([cuda.build().error_on_failure()])?
+        .with_session_log_level(ort::logging::LogLevel::Warning)?
+        .context("Failed to create session builder with CUDA execution provider")
 }
 
 // --- Helper Structs for Yunet ---
@@ -177,65 +246,108 @@ impl ModelStore {
         let liveness_path = Path::new(models_dir).join("MiniFASNetV2.onnx");
         let yunet_path = Path::new(models_dir).join("face_detection_yunet_2023mar.onnx");
 
-        // --- 1. Загрузка YuNet на CPU (Принудительно) ---
-        info!("Загрузка YuNet на CPU...");
-        let yunet = Session::builder()?
-            .with_optimization_level(GraphOptimizationLevel::Level3)?
-            .with_intra_threads(2)?
-            // Не добавляем CUDA провайдер для этого билдера
-            .commit_from_file(&yunet_path)
-            .context("Failed to load YuNet on CPU")?;
-
-        // --- 2. Попытка загрузки тяжелых моделей на CUDA ---
-        info!("Попытка загрузки ArcFace и Liveness с CUDA...");
-        
         let force_cpu = std::env::var("VISION_FORCE_CPU")
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(false);
 
-        let (arcface, liveness, used_provider, init_msg) = if force_cpu {
-            warn!("VISION_FORCE_CPU enabled. Heavy models on CPU.");
-            let (a, l) = Self::load_heavy_on_cpu(&arcface_path, &liveness_path)?;
-            (a, l, "CPU".to_string(), "Forced CPU mode".to_string())
-        } else {
-            // Создаем CUDA билдер
-            let builder_cuda_res = Session::builder()?
-                .with_optimization_level(GraphOptimizationLevel::Level3)?
-                .with_intra_threads(4)?
-                .with_execution_providers([
-                    ort::execution_providers::CUDAExecutionProvider::default().build()
-                ]);
+        let device_candidates = candidate_cuda_device_ids();
+        info!(
+            "Попытка загрузки моделей с CUDA... candidates={:?}, mem_limit_mb={:?}",
+            device_candidates,
+            env_usize("VISION_CUDA_MEM_LIMIT_MB")
+        );
 
-            match builder_cuda_res {
-                Ok(bc) => {
-                    // Пробуем загрузить ArcFace на GPU
-                    match bc.clone().commit_from_file(&arcface_path) {
-                        Ok(arc_session) => {
-                            // Если ArcFace зашел, пробуем Liveness
-                            match bc.commit_from_file(&liveness_path) {
-                                Ok(live_session) => {
-                                    info!("ArcFace и Liveness успешно загружены на CUDA!");
-                                    (arc_session, live_session, "CUDA".to_string(), "YuNet: CPU, Others: CUDA".to_string())
-                                }
-                                Err(e) => {
-                                    warn!("Liveness не влез в GPU: {}. Откат тяжелых моделей на CPU.", e);
-                                    let (a, l) = Self::load_heavy_on_cpu(&arcface_path, &liveness_path)?;
-                                    (a, l, "CPU".to_string(), format!("Liveness GPU error: {}", e))
-                                }
+        let (yunet, arcface, liveness, used_provider, init_msg) = if force_cpu {
+            warn!("VISION_FORCE_CPU enabled. Starting vision-worker on CPU.");
+            let (y, a, l, p) = Self::load_cpu(&yunet_path, &arcface_path, &liveness_path)?;
+            (y, a, l, p, "Forced CPU mode".to_string())
+        } else {
+            let mut cuda_errors_short: Vec<(i32, &'static str, String)> = Vec::new();
+            let mut cuda_errors_full = Vec::new();
+            let mut loaded = None;
+
+            for device_id in device_candidates {
+                match build_cuda_builder(device_id) {
+                    Ok(builder_cuda) => {
+                        match Self::try_load(
+                            &builder_cuda,
+                            &yunet_path,
+                            &arcface_path,
+                            &liveness_path,
+                        ) {
+                            Ok(sessions) => {
+                                info!("Успешно загружено с CUDA (device_id={})", device_id);
+                                loaded = Some((
+                                    sessions.0,
+                                    sessions.1,
+                                    sessions.2,
+                                    format!("CUDA:{}", device_id),
+                                    format!(
+                                        "Initialized successfully with CUDA (device_id={})",
+                                        device_id
+                                    ),
+                                ));
+                                break;
+                            }
+                            Err(e) => {
+                                let details = format!("{:#}", e);
+                                cuda_errors_short.push((
+                                    device_id,
+                                    "load",
+                                    compact_cuda_error(&details),
+                                ));
+                                cuda_errors_full.push(format!(
+                                    "device_id={}: load failed: {}",
+                                    device_id, details
+                                ));
                             }
                         }
-                        Err(e) => {
-                            warn!("ArcFace не влез в GPU: {}. Откат тяжелых моделей на CPU.", e);
-                            let (a, l) = Self::load_heavy_on_cpu(&arcface_path, &liveness_path)?;
-                            (a, l, "CPU".to_string(), format!("ArcFace GPU error: {}", e))
-                        }
+                    }
+                    Err(e) => {
+                        let details = format!("{:#}", e);
+                        cuda_errors_short.push((
+                            device_id,
+                            "builder",
+                            compact_cuda_error(&details),
+                        ));
+                        cuda_errors_full.push(format!(
+                            "device_id={}: builder failed: {}",
+                            device_id, details
+                        ));
                     }
                 }
-                Err(e) => {
-                    warn!("CUDA провайдер недоступен: {}. Все на CPU.", e);
-                    let (a, l) = Self::load_heavy_on_cpu(&arcface_path, &liveness_path)?;
-                    (a, l, "CPU".to_string(), format!("CUDA init failed: {}", e))
+            }
+
+            if let Some(ok) = loaded {
+                ok
+            } else {
+                let mut grouped: BTreeMap<String, Vec<String>> = BTreeMap::new();
+                for (device_id, stage, reason) in &cuda_errors_short {
+                    grouped
+                        .entry(reason.clone())
+                        .or_default()
+                        .push(format!("{}:{}", device_id, stage));
                 }
+
+                let compact_summary = grouped
+                    .into_iter()
+                    .map(|(reason, sources)| format!("[{}] {}", sources.join(","), reason))
+                    .collect::<Vec<_>>()
+                    .join(" | ");
+
+                warn!("CUDA недоступна: {}. Переключение на CPU.", compact_summary);
+                debug!("CUDA full init errors: {}", cuda_errors_full.join(" || "));
+                let (y, a, l, p) = Self::load_cpu(&yunet_path, &arcface_path, &liveness_path)?;
+                (
+                    y,
+                    a,
+                    l,
+                    p,
+                    format!(
+                        "CUDA unavailable for all device candidates. Reasons: {}. Fallback to CPU.",
+                        compact_summary
+                    ),
+                )
             }
         };
 
@@ -243,25 +355,11 @@ impl ModelStore {
             yunet: Mutex::new(yunet),
             arcface: Mutex::new(arcface),
             liveness: Mutex::new(liveness),
-            provider: Mutex::new(used_provider.clone()),
+            provider: Mutex::new(used_provider),
             init_message: Mutex::new(init_msg),
             models_dir: models_dir.to_string(),
-            use_cpu_runtime: AtomicBool::new(used_provider == "CPU"),
+            use_cpu_runtime: AtomicBool::new(force_cpu),
         })
-    }
-
-    // Вспомогательный метод для загрузки ArcFace и Liveness на CPU
-    fn load_heavy_on_cpu(arc_path: &Path, live_path: &Path) -> Result<(Session, Session)> {
-        let builder = Session::builder()?
-            .with_optimization_level(GraphOptimizationLevel::Level3)?
-            .with_intra_threads(4)?;
-        
-        let arc = builder.clone().commit_from_file(arc_path)
-            .context("Failed to load ArcFace on CPU")?;
-        let live = builder.commit_from_file(live_path)
-            .context("Failed to load Liveness on CPU")?;
-        
-        Ok((arc, live))
     }
 
     fn load_cpu(

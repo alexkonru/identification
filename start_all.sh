@@ -1,84 +1,117 @@
 #!/bin/bash
 set -euo pipefail
 
-# --- Конфигурация путей ---
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-LOG_DIR="$ROOT_DIR/logs"
-mkdir -p "$LOG_DIR"
+# ------------------------------------------------------------
+# Скрипт запуска всей системы (audio + vision + gateway)
+# Цель:
+#   1) максимально использовать GPU для vision,
+#   2) не ронять систему при проблемах CUDA/ORT,
+#   3) сохранить предсказуемый и диагностируемый запуск.
+# ------------------------------------------------------------
 
-# Цвета для вывода
-G='\033[0;32m'
-Y='\033[1;33m'
-R='\033[0;31m'
-NC='\033[0m'
-
-echo -e "${G}=== Инициализация системы (Dynamic Load Mode) ===${NC}"
-
-# --- 1. Проверка системных зависимостей ---
-check_env() {
-    echo -n "Проверка CUDA... "
-    if [ -d "/opt/cuda" ]; then
-        echo -e "${G}OK${NC}"
-    else
-        echo -e "${R}Ошибка: /opt/cuda не найден${NC}"; exit 1
-    fi
-
-    echo -n "Проверка ONNX Runtime... "
-    if [ -f "/usr/lib/libonnxruntime.so" ]; then
-        echo -e "${G}OK (/usr/lib)${NC}"
-    else
-        echo -e "${R}Ошибка: выполните 'sudo pacman -S onnxruntime-cuda'${NC}"; exit 1
-    fi
-}
-
-# --- 2. Настройка окружения (Clean Environment) ---
-# Указываем ORT грузить системную либу во время работы (runtime)
-export ORT_DYLIB_PATH=/usr/lib/libonnxruntime.so
-
-# Пути к библиотекам CUDA и cuDNN для динамического линковщика
-export CUDA_HOME="/opt/cuda"
-export PATH="$CUDA_HOME/bin:$PATH"
-export LD_LIBRARY_PATH="/opt/cuda/lib64:/usr/lib:$LD_LIBRARY_PATH"
-
-# Настройки GPU и логирования
-export CUDA_VISIBLE_DEVICES=0
-export ONNX_RUNTIME_LOG_SEVERITY=0
-unset ORT_STRATEGY # Снимаем, так как используем load-dynamic
-
-# --- 3. Очистка старых процессов и "зомби" файлов ---
-echo -e "${Y}Очистка окружения...${NC}"
-pkill -f gateway-service || true
-pkill -f vision-worker || true
-pkill -f audio-worker || true
-# Удаляем старые .so, которые могли быть скачаны cargo ранее
-find "$ROOT_DIR/target" -name "libonnxruntime.so*" -delete 2>/dev/null || true
+# Останавливаем старые процессы, если они остались.
+"${PKILL_BIN:-pkill}" -f gateway-service >/dev/null 2>&1 || true
+"${PKILL_BIN:-pkill}" -f vision-worker >/dev/null 2>&1 || true
+"${PKILL_BIN:-pkill}" -f audio-worker >/dev/null 2>&1 || true
 sleep 1
 
-# --- 4. Запуск сервисов ---
-check_env
+# --------------------------
+# Настройки Vision (GPU-first)
+# --------------------------
+# По умолчанию vision НЕ принудительно на CPU.
+export VISION_FORCE_CPU="${VISION_FORCE_CPU:-0}"
+# Идентификатор GPU.
+# Если оставить пустым, vision-worker сам попробует несколько device_id (0..3)
+# и выберет рабочий (полезно для гибридной графики).
+export VISION_CUDA_DEVICE_ID="${VISION_CUDA_DEVICE_ID:-}"
+# Лимит памяти CUDA EP для vision (в MB).
+# Для MX230 (2GB) безопасно начинать с 1024..1536.
+export VISION_CUDA_MEM_LIMIT_MB="${VISION_CUDA_MEM_LIMIT_MB:-1536}"
 
-# Vision Worker (Запуск из поддиректории для корректных путей к моделям)
-echo -e "${Y}[1/3] Запуск Vision Worker...${NC}"
-cd "$ROOT_DIR/vision-worker"
-nohup cargo run > "$LOG_DIR/vision.log" 2>&1 &
-echo -e "      Лог: logs/vision.log"
+# --------------------------
+# Настройки Audio
+# --------------------------
+# ВАЖНО: по умолчанию аудио оставляем на CPU, чтобы не "съедать" VRAM,
+# которую лучше отдать vision-моделям.
+# При желании можно включить GPU явно: AUDIO_USE_CUDA=1
+export AUDIO_USE_CUDA="${AUDIO_USE_CUDA:-0}"
+export AUDIO_FORCE_CPU="${AUDIO_FORCE_CPU:-0}"
+# Лимит VRAM для audio CUDA EP (если AUDIO_USE_CUDA=1).
+export AUDIO_CUDA_MEM_LIMIT_MB="${AUDIO_CUDA_MEM_LIMIT_MB:-256}"
 
-# Audio Worker
-echo -e "${Y}[2/3] Запуск Audio Worker...${NC}"
-cd "$ROOT_DIR/audio-worker"
-nohup cargo run > "$LOG_DIR/audio.log" 2>&1 &
-echo -e "      Лог: logs/audio.log"
+# Если пользователь не попросил явно закрепить ORT_DYLIB_PATH,
+# убираем его, чтобы не подхватить случайную несовместимую библиотеку.
+if [ "${USE_CUSTOM_ORT_DYLIB:-0}" != "1" ]; then
+  unset ORT_DYLIB_PATH || true
+fi
 
-# Gateway Service
-echo -e "${Y}[3/3] Запуск Gateway Service...${NC}"
-cd "$ROOT_DIR"
-sleep 2 # Даем воркерам время на инициализацию GPU
-nohup cargo run -p gateway-service > "$LOG_DIR/gateway.log" 2>&1 &
-echo -e "      Лог: logs/gateway.log"
+# Опциональное подключение CUDA-библиотек из Ollama-bundle.
+# Путь НЕ меняем, только используем при явном флаге.
+if [ "${USE_OLLAMA_CUDA_LIBS:-0}" = "1" ] && [ -d "/usr/local/lib/ollama/cuda_v12" ]; then
+  export LD_LIBRARY_PATH="/usr/local/lib/ollama/cuda_v12:${LD_LIBRARY_PATH:-}"
+fi
 
-echo -e "\n${G}=== Система запущена успешно! ===${NC}"
-echo "Для мониторинга GPU используй: watch -n 1 nvidia-smi"
-echo "Для просмотра распознавания: tail -f logs/vision.log"
+# LAZY обычно устойчивее на системах с несколькими наборами CUDA-библиотек.
+export CUDA_MODULE_LOADING="${CUDA_MODULE_LOADING:-LAZY}"
 
-# Автоматический просмотр лога вижн-воркера
-tail -f "$LOG_DIR/vision.log"
+
+# Делаем лог чище: оставляем полезные INFO по сервисам и WARN по onnxruntime.
+# При необходимости можно переопределить вручную через RUST_LOG.
+export RUST_LOG="${RUST_LOG:-vision_worker=info,audio_worker=info,gateway_service=info,ort::logging=warn}"
+
+mkdir -p logs
+
+# Небольшой preflight для диагностики: если nvidia-smi недоступен,
+# просто пишем предупреждение и продолжаем (CPU fallback в коде сохранён).
+if command -v nvidia-smi >/dev/null 2>&1; then
+  nvidia-smi > logs/nvidia-smi.log 2>&1 || true
+else
+  echo "WARN: nvidia-smi not found" > logs/nvidia-smi.log
+fi
+
+start_service() {
+  local name="$1"
+  shift
+  echo "Starting ${name}..."
+  nohup "$@" > "logs/${name}.log" 2>&1 &
+  echo "$!" > "logs/${name}.pid"
+}
+
+is_pid_alive() {
+  local pid="$1"
+  kill -0 "$pid" >/dev/null 2>&1
+}
+
+# Запускаем audio и vision раньше gateway,
+# чтобы gateway подключался к уже живым backend-сервисам.
+start_service "audio" cargo run -p audio-worker
+start_service "vision" cargo run -p vision-worker
+sleep 2
+
+# Fail-fast: если vision умер на старте, сразу останавливаемся.
+if [ -f logs/vision.pid ]; then
+  vision_pid="$(cat logs/vision.pid)"
+  if ! is_pid_alive "$vision_pid"; then
+    echo "Vision worker crashed during startup. See logs/vision.log"
+    exit 1
+  fi
+fi
+
+start_service "gateway" cargo run -p gateway-service
+sleep 2
+
+# Fail-fast: если gateway умер, считаем запуск неуспешным.
+if [ -f logs/gateway.pid ]; then
+  gateway_pid="$(cat logs/gateway.pid)"
+  if ! is_pid_alive "$gateway_pid"; then
+    echo "Gateway service crashed during startup. See logs/gateway.log"
+    exit 1
+  fi
+fi
+
+echo "Services started."
+echo "  Audio log:      logs/audio.log"
+echo "  Vision log:     logs/vision.log"
+echo "  Gateway log:    logs/gateway.log"
+echo "  GPU snapshot:   logs/nvidia-smi.log"
+echo "Tip: tail -f logs/vision.log"

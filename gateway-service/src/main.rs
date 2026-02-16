@@ -1118,13 +1118,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let addr = "0.0.0.0:50051".parse()?;
 
-    let audio_url = "http://127.0.0.1:50053";
-    tracing::info!("Connecting to Audio Worker at {}", audio_url);
-    let audio_channel = tonic::transport::Endpoint::from_static(audio_url).connect_lazy();
+    let audio_url =
+        std::env::var("AUDIO_URL").unwrap_or_else(|_| "http://127.0.0.1:50053".to_string());
+    let vision_url =
+        std::env::var("VISION_URL").unwrap_or_else(|_| "http://127.0.0.1:50052".to_string());
 
-    let vision_url = "http://127.0.0.1:50052";
-    tracing::info!("Connecting to Vision Worker at {}", vision_url);
-    let vision_channel = tonic::transport::Endpoint::from_static(vision_url).connect_lazy();
+    tracing::info!(
+        "Using backend endpoints: audio={}, vision={}",
+        audio_url,
+        vision_url
+    );
+
+    let audio_channel = tonic::transport::Endpoint::from_shared(audio_url.clone())?.connect_lazy();
+    let vision_channel =
+        tonic::transport::Endpoint::from_shared(vision_url.clone())?.connect_lazy();
 
     let face_similarity_threshold = std::env::var("FACE_SIMILARITY_THRESHOLD")
         .unwrap_or_else(|_| "0.6".to_string())
