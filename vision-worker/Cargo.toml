@@ -23,4 +23,4 @@ tower-http = { version = "0.5", features = ["trace", "cors"] }
 
 [dependencies.ort]
 version = "=2.0.0-rc.9"
-features = ["cuda", "half"]
+features = ["cuda", "half", "tls-rustls"]
