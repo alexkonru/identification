@@ -75,3 +75,8 @@ echo "Проверка GPU внутри vision-контейнера:"
 echo "  docker compose exec vision-worker nvidia-smi"
 echo
 echo "Для клиента с хоста используй gateway: 127.0.0.1:50051"
+
+echo
+echo "Остановка Docker-сервисов:"
+echo "  docker compose stop      # остановить контейнеры"
+echo "  docker compose down      # остановить и удалить контейнеры/сеть"
