@@ -30,7 +30,7 @@ fn env_usize(name: &str) -> Option<usize> {
     std::env::var(name).ok()?.trim().parse::<usize>().ok()
 }
 
-fn build_cuda_audio_builder() -> Result<ort::session::SessionBuilder> {
+fn build_cuda_audio_builder() -> Result<ort::session::builder::SessionBuilder> {
     // Важно: для аудио по умолчанию используем CPU, так как на слабых GPU
     // выгода обычно ниже, а VRAM лучше оставить под vision.
     let mut cuda = ort::execution_providers::CUDAExecutionProvider::default();
@@ -139,7 +139,7 @@ impl ModelStore {
         let ecapa_path = Path::new(models_dir).join("voxceleb_ECAPA512_LM.onnx");
 
         let load_with_builder =
-            |builder: &ort::session::SessionBuilder| -> Result<(Session, Session)> {
+            |builder: &ort::session::builder::SessionBuilder| -> Result<(Session, Session)> {
                 let aasist = builder
                     .clone()
                     .commit_from_file(&aasist_path)
