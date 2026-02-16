@@ -1,4 +1,7 @@
+import os
+import subprocess
 import sys
+import time
 import cv2
 import grpc
 import PyQt6.QtCore as QtCore
@@ -37,18 +40,35 @@ def set_dark_theme(app):
 # --- gRPC Client Wrapper ---
 class BiometryClient:
     def __init__(self, address='127.0.0.1:50051'):
+        self.address = address
         self.channel = grpc.insecure_channel(address)
         self.stub = biometry_pb2_grpc.GatekeeperStub(self.channel)
+        host = address.split(':')[0]
+        self.vision_channel = grpc.insecure_channel(f"{host}:50052")
+        self.audio_channel = grpc.insecure_channel(f"{host}:50053")
+        self.vision_stub = biometry_pb2_grpc.VisionStub(self.vision_channel)
+        self.audio_stub = biometry_pb2_grpc.AudioStub(self.audio_channel)
+
+    def wait_until_ready(self, timeout=5.0):
+        try:
+            grpc.channel_ready_future(self.channel).result(timeout=timeout)
+            # Real RPC probe: avoids false-positive "channel ready" states
+            self.stub.GetSystemStatus(biometry_pb2.Empty(), timeout=timeout)
+            return True
+        except (grpc.FutureTimeoutError, grpc.RpcError):
+            return False
 
     def list_users(self):
-        try:
-            return self.stub.ListUsers(biometry_pb2.ListUsersRequest()).users
-        except grpc.RpcError as e:
-            print(f"RPC Error: {e}")
-            return []
+        # Gateway can be up slightly later than UI tabs initialization.
+        for _ in range(3):
+            try:
+                return self.stub.ListUsers(biometry_pb2.ListUsersRequest(), timeout=2.0).users
+            except grpc.RpcError:
+                time.sleep(0.4)
+        return []
 
     def register_user(self, name, image_bytes):
-        return self.stub.RegisterUser(biometry_pb2.RegisterUserRequest(name=name, image=image_bytes))
+        return self.stub.RegisterUser(biometry_pb2.RegisterUserRequest(name=name, images=[image_bytes], voices=[]))
 
     def remove_user(self, user_id):
         return self.stub.RemoveUser(biometry_pb2.IdRequest(id=user_id))
@@ -73,16 +93,107 @@ class BiometryClient:
             name=name, room_id=room_id, device_type=device_type, connection_string=connection_string
         ))
 
-    def set_access_rules(self, user_id, room_ids):
+    def set_access_rules(self, user_id, room_ids, zone_ids=None):
+        if zone_ids is None:
+            zone_ids = []
         return self.stub.SetAccessRules(biometry_pb2.SetAccessRulesRequest(
-            user_id=user_id, allowed_room_ids=room_ids
+            user_id=user_id, allowed_room_ids=room_ids, allowed_zone_ids=zone_ids
         ))
 
     def get_user_access(self, user_id):
-        return self.stub.GetUserAccess(biometry_pb2.IdRequest(id=user_id)).allowed_room_ids
+        return self.stub.GetUserAccess(biometry_pb2.IdRequest(id=user_id))
+
+    def run_identification_pipeline(self, device_id, image_bytes, audio_bytes=None, sample_rate=16000):
+        details = []
+        vision_ok = False
+        audio_ok = None
+
+        try:
+            face = self.vision_stub.ProcessFace(biometry_pb2.ImageFrame(content=image_bytes))
+            vision_ok = face.detected and face.is_live
+            details.append(
+                f"[VISION] detected={face.detected}, live={face.is_live}, "
+                f"score={face.liveness_score:.3f}, provider={face.execution_provider or '-'}"
+            )
+            if face.error_msg:
+                details.append(f"[VISION] error={face.error_msg}")
+        except grpc.RpcError as e:
+            details.append(f"[VISION] RPC ERROR: {e.code().name} {e.details()}")
+
+        if audio_bytes:
+            try:
+                voice = self.audio_stub.ProcessVoice(
+                    biometry_pb2.AudioChunk(content=audio_bytes, sample_rate=sample_rate)
+                )
+                audio_ok = voice.detected
+                details.append(
+                    f"[AUDIO] detected={voice.detected}, emb_len={len(voice.embedding)}, "
+                    f"provider={voice.execution_provider or '-'}"
+                )
+                if voice.error_msg:
+                    details.append(f"[AUDIO] error={voice.error_msg}")
+            except grpc.RpcError as e:
+                audio_ok = False
+                details.append(f"[AUDIO] RPC ERROR: {e.code().name} {e.details()}")
+        else:
+            details.append("[AUDIO] skipped")
+
+        try:
+            req_kwargs = {"device_id": device_id, "image": image_bytes}
+            req_fields = getattr(biometry_pb2.CheckAccessRequest, "DESCRIPTOR", None)
+            field_map = req_fields.fields_by_name if req_fields else {}
+            if "audio" in field_map:
+                req_kwargs["audio"] = audio_bytes or b""
+            if "audio_sample_rate" in field_map:
+                req_kwargs["audio_sample_rate"] = sample_rate
+            access = self.stub.CheckAccess(biometry_pb2.CheckAccessRequest(**req_kwargs))
+            stage = getattr(access, "decision_stage", "decision")
+            face_live = getattr(access, "face_live", False)
+            face_liveness_score = getattr(access, "face_liveness_score", 0.0)
+            face_distance = getattr(access, "face_distance", 1.0)
+            voice_distance = getattr(access, "voice_distance", 1.0)
+            final_confidence = getattr(access, "final_confidence", 0.0)
+
+            details.append(
+                f"[DECISION] stage={stage}, granted={access.granted}, user={access.user_name}, msg={access.message}"
+            )
+            details.append(
+                f"[CONF] face_live={face_live}({face_liveness_score:.3f}) "
+                f"face_dist={face_distance:.3f}, voice_dist={voice_distance:.3f}, final={final_confidence:.3f}"
+            )
+            return {
+                "ok": True,
+                "granted": access.granted,
+                "user_name": access.user_name,
+                "message": access.message,
+                "vision_ok": vision_ok,
+                "audio_ok": audio_ok,
+                "details": details,
+                "stage": stage,
+                "face_score": face_liveness_score,
+                "face_distance": face_distance,
+                "voice_distance": voice_distance,
+                "final_confidence": final_confidence,
+            }
+        except grpc.RpcError as e:
+            details.append(f"[GATEWAY] RPC ERROR: {e.code().name} {e.details()}")
+            return {
+                "ok": False,
+                "granted": False,
+                "user_name": "-",
+                "message": e.details(),
+                "vision_ok": vision_ok,
+                "audio_ok": audio_ok,
+                "details": details,
+                "stage": "gateway_error",
+                "face_score": 0.0,
+                "face_distance": 1.0,
+                "voice_distance": 1.0,
+                "final_confidence": 0.0,
+            }
 
     def get_system_status(self):
-        return self.stub.GetSystemStatus(biometry_pb2.Empty())
+        return self.stub.GetSystemStatus(biometry_pb2.Empty(), timeout=3.0)
 
     def control_service(self, service, action):
         return self.stub.ControlService(biometry_pb2.ControlServiceRequest(service_name=service, action=action))
@@ -227,7 +338,7 @@ class PersonnelTab(QWidget):
                 self.current_frame = frame
                 rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 h, w, ch = rgb.shape
-                img = QImage(rgb.data, w, h, ch*w, QImage.Format.Format_RGB888)
+                img = QImage(rgb.data, w, h, ch*w, QImage.Format.Format_RGB888).copy()
                 self.video_label.setPixmap(QPixmap.fromImage(img).scaled(self.video_label.size(), Qt.AspectRatioMode.KeepAspectRatio))
 
     def refresh_users(self):
@@ -352,7 +463,7 @@ class AccessTab(QWidget):
         for u in self.client.list_users(): self.user_list.addItem(f"{u.id}: {u.name}")
     def load_user_rights(self, current, prev):
         if not current: return
-        self.rights_tree.clear(); uid = int(current.text().split(':')[0]); allowed = set(self.client.get_user_access(uid))
+        self.rights_tree.clear(); uid = int(current.text().split(':')[0]); allowed = set(self.client.get_user_access(uid).allowed_room_ids)
         zones = self.client.list_zones(); rooms = self.client.list_rooms(); z_map = {z.id: QTreeWidgetItem([z.name]) for z in zones}
         for r in rooms:
             item = QTreeWidgetItem([r.name]); item.setCheckState(0, Qt.CheckState.Checked if r.id in allowed else Qt.CheckState.Unchecked)
@@ -427,116 +538,262 @@ class HelpTab(QWidget):
 
 class MonitoringTab(QWidget):
     def __init__(self, client):
-        super().__init__(); self.client = client; self.active_cameras = {}; self.log_timer = QTimer()
-        self.log_timer.timeout.connect(self.process_active_mode); self.setup_ui()
-    
+        super().__init__()
+        self.client = client
+        self.active_cameras = {}
+        self.selected_device_id = None
+        self.log_timer = QTimer()
+        self.log_timer.timeout.connect(self.process_active_mode)
+        self.mic_stream = MicrophoneStream(sample_rate=16000, channels=1)
+        self.setup_ui()
+
     def setup_ui(self):
-        layout = QHBoxLayout(self); left = QVBoxLayout()
-        self.tree = QTreeWidget(); self.tree.setHeaderHidden(True); self.tree.currentItemChanged.connect(self.on_room_select)
-        left.addWidget(QLabel("<b>Помещения:</b>")); left.addWidget(self.tree)
-        self.chk_active = QCheckBox("🚀 Live ID (Активный режим)"); self.chk_active.setToolTip("Клиент сам отправляет кадры на сервер")
-        left.addWidget(self.chk_active)
-        btn = QPushButton("🔄 Обновить"); btn.clicked.connect(self.refresh_tree); left.addWidget(btn)
+        layout = QHBoxLayout(self)
+
+        left = QVBoxLayout()
+        self.tree = QTreeWidget()
+        self.tree.setHeaderHidden(True)
+        self.tree.currentItemChanged.connect(self.on_select)
+        left.addWidget(QLabel("<b>Помещения и устройства:</b>"))
+        left.addWidget(self.tree)
+
+        self.btn_refresh = QPushButton("🔄 Обновить список инфраструктуры")
+        self.btn_refresh.clicked.connect(self.refresh_tree)
+        left.addWidget(self.btn_refresh)
+
+        self.btn_reconnect = QPushButton("🔌 Переподключить выбранную камеру")
+        self.btn_reconnect.clicked.connect(self.reconnect_selected_camera)
+        left.addWidget(self.btn_reconnect)
+        left.addStretch()
         layout.addLayout(left, 1)
-        self.video_container = QWidget(); self.grid_layout = QGridLayout(self.video_container)
-        scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setWidget(self.video_container); layout.addWidget(scroll, 3)
-        self.refresh_tree(); self.log_timer.start(1000)
+
+        center = QVBoxLayout()
+        self.video_label = QLabel("Выбери устройство-камеру слева")
+        self.video_label.setMinimumSize(800, 600)  # 4:3 area
+        self.video_label.setStyleSheet("background-color: black; border: 1px solid #555;")
+        self.video_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        center.addWidget(self.video_label)
+
+        layout.addLayout(center, 3)
+
+        self.pipeline_log = QTextEdit()
+        self.pipeline_log.setReadOnly(True)
+        self.pipeline_log.setMinimumWidth(420)
+        self.pipeline_log.setPlaceholderText("Здесь отображается полный пайплайн: liveness -> face -> voice -> policy -> decision")
+        layout.addWidget(self.pipeline_log, 2)
+
+        self.refresh_tree()
+        self.log_timer.start(1200)  # always-on identification
+
+    def capture_audio_raw(self, duration_s=1, sample_rate=16000):
+        chunk = self.mic_stream.read_chunk(duration_s=duration_s)
+        if chunk is None:
+            self.pipeline_log.append("[AUDIO] capture failed: microphone stream unavailable")
+            return None
+        return chunk
 
     def refresh_tree(self):
         self.tree.clear()
         try:
-            zones = self.client.list_zones(); rooms = self.client.list_rooms(); z_map = {z.id: QTreeWidgetItem([z.name]) for z in zones}
+            zones = self.client.list_zones()
+            rooms = self.client.list_rooms()
+            devices = self.client.list_devices()
+            z_map = {z.id: QTreeWidgetItem([f"{z.name}"]) for z in zones}
+            r_map = {}
             for r in rooms:
-                item = QTreeWidgetItem([r.name]); item.setData(0, Qt.ItemDataRole.UserRole, r.id)
-                if r.zone_id in z_map: z_map[r.zone_id].addChild(item)
-            for z in z_map.values(): self.tree.addTopLevelItem(z); z.setExpanded(True)
-        except: pass
+                room_item = QTreeWidgetItem([f"{r.name}"])
+                room_item.setData(0, Qt.ItemDataRole.UserRole, ("room", r.id))
+                r_map[r.id] = room_item
+                if r.zone_id in z_map:
+                    z_map[r.zone_id].addChild(room_item)
 
-    def on_room_select(self, current, prev=None):
+            for d in devices:
+                if d.room_id in r_map and d.device_type == 'camera':
+                    d_item = QTreeWidgetItem([f"📷 {d.name} ({d.connection_string})"])
+                    d_item.setData(0, Qt.ItemDataRole.UserRole, ("device", d))
+                    r_map[d.room_id].addChild(d_item)
+
+            for z in z_map.values():
+                self.tree.addTopLevelItem(z)
+                z.setExpanded(True)
+        except Exception as e:
+            self.pipeline_log.append(f"[UI] refresh error: {e}")
+
+    def on_select(self, current, _prev=None):
         self.stop_all_videos()
-        while self.grid_layout.count():
-            item = self.grid_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-        
-        if not current or current.childCount() > 0: return
-        room_id = current.data(0, Qt.ItemDataRole.UserRole)
-        try:
-            devices = [d for d in self.client.list_devices() if d.room_id == room_id and d.device_type == 'camera']
-            if not devices: self.grid_layout.addWidget(QLabel("Нет камер"), 0, 0); return
-            for i, dev in enumerate(devices):
-                lbl = QLabel(f"Loading {dev.name}..."); lbl.setMinimumSize(320, 240); lbl.setStyleSheet("background-color: black; border: 1px solid #555;"); self.grid_layout.addWidget(lbl, i//2, i%2)
-                t = VideoThread(dev.connection_string, dev.id)
-                t.frame_ready.connect(lambda img, l=lbl: l.setPixmap(QPixmap.fromImage(img).scaled(l.size(), Qt.AspectRatioMode.KeepAspectRatio)))
-                t.start(); self.active_cameras[dev.id] = t
-        except: pass
+        if not current:
+            return
+        data = current.data(0, Qt.ItemDataRole.UserRole)
+        if not data or data[0] != "device":
+            self.selected_device_id = None
+            self.video_label.setText("Выбери устройство-камеру слева")
+            return
+
+        dev = data[1]
+        self.selected_device_id = dev.id
+        t = VideoThread(dev.connection_string, dev.id)
+        t.frame_ready.connect(self._show_frame)
+        t.status_msg.connect(lambda msg: self.pipeline_log.append(f"[CAMERA] {msg}"))
+        t.start()
+        self.active_cameras[dev.id] = t
+
+    def _show_frame(self, img):
+        pix = QPixmap.fromImage(img)
+        self.video_label.setPixmap(
+            pix.scaled(self.video_label.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+        )
+
+    def reconnect_selected_camera(self):
+        item = self.tree.currentItem()
+        if item:
+            self.on_select(item)
 
     def stop_all_videos(self):
-        for t in self.active_cameras.values(): t.stop(); t.wait()
+        for t in self.active_cameras.values():
+            t.stop()
+            t.wait()
         self.active_cameras.clear()
 
     def restart_videos(self):
         item = self.tree.currentItem()
-        if item: self.on_room_select(item)
+        if item:
+            self.on_select(item)
 
     def process_active_mode(self):
-        if self.chk_active.isChecked():
-            # Active Mode: Send frames
-            for dev_id, t in self.active_cameras.items():
-                frame = t.get_frame_bytes()
-                if frame:
-                    try:
-                        resp = self.client.stub.CheckAccess(biometry_pb2.CheckAccessRequest(device_id=dev_id, image=frame))
-                        msg = f"{resp.user_name}: {'OK' if resp.granted else 'NO'}\n{resp.message}" # Server usually sends generic message, log has details
-                        # To show details we rely on log or update server response. 
-                        # Server now logs details to DB. Let's try to fetch latest log for details too?
-                        # Or just show the main decision.
-                        # Actually, we can fetch logs in parallel or just show result.
-                        # Let's show result color.
-                        color = (0, 255, 0) if resp.granted else (0, 0, 255)
-                        t.set_overlay(msg, color)
-                    except: pass
-        else:
-            # Passive Mode: Check logs
+        # Always active: always use mic + camera for pipeline
+        if not self.active_cameras:
+            return
+
+        audio_bytes = self.capture_audio_raw(duration_s=1, sample_rate=16000)
+
+        for dev_id, t in self.active_cameras.items():
+            frame = t.get_frame_bytes()
+            if not frame:
+                continue
             try:
-                logs = self.client.get_logs(limit=1)
-                if logs and self.active_cameras:
-                    log = logs[0]
-                    # Simple heuristic: show log if it's recent (TODO: check timestamp)
-                    msg = f"{log.user_name}: {'OK' if log.access_granted else 'NO'}\n{log.details}"
-                    color = (0, 255, 0) if log.access_granted else (0, 0, 255)
-                    for t in self.active_cameras.values(): t.set_overlay(msg, color)
-            except: pass
+                result = self.client.run_identification_pipeline(dev_id, frame, audio_bytes=audio_bytes)
+                msg = f"{result['user_name']}: {'OK' if result['granted'] else 'NO'}\n{result['message']}"
+                color = (0, 255, 0) if result['granted'] else (0, 0, 255)
+                t.set_overlay(msg, color)
+
+                self.pipeline_log.clear()
+                self.pipeline_log.append(f"Device ID: {dev_id}")
+                self.pipeline_log.append("=" * 50)
+                for line in result["details"]:
+                    self.pipeline_log.append(line)
+                self.pipeline_log.append("=" * 50)
+                self.pipeline_log.append(
+                    f"RESULT: {'GRANTED' if result['granted'] else 'DENIED'} | STAGE={result['stage']} | "
+                    f"VISION_OK={result['vision_ok']} | AUDIO_OK={result['audio_ok']} | CONF={result['final_confidence']:.3f}"
+                )
+            except Exception as e:
+                self.pipeline_log.append(f"[PIPELINE] ERROR: {e}")
+
+    def closeEvent(self, event):
+        self.stop_all_videos()
+        self.mic_stream.stop()
+        super().closeEvent(event)
+
+
+class MicrophoneStream:
+    def __init__(self, sample_rate=16000, channels=1):
+        self.sample_rate = sample_rate
+        self.channels = channels
+        self.proc = None
+
+    def start(self):
+        if self.proc is not None and self.proc.poll() is None:
+            return True
+        cmd = [
+            "arecord", "-q", "-r", str(self.sample_rate), "-c", str(self.channels),
+            "-f", "S16_LE", "-t", "raw", "-",
+        ]
+        try:
+            self.proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+            return True
+        except Exception:
+            self.proc = None
+            return False
+
+    def read_chunk(self, duration_s=1):
+        if not self.start() or not self.proc or not self.proc.stdout:
+            return None
+        needed = int(self.sample_rate * duration_s * 2 * self.channels)  # int16 mono
+        data = self.proc.stdout.read(needed)
+        if not data or len(data) < needed:
+            return None
+        return data
+
+    def stop(self):
+        if self.proc and self.proc.poll() is None:
+            self.proc.terminate()
+            try:
+                self.proc.wait(timeout=1)
+            except Exception:
+                self.proc.kill()
+        self.proc = None
+
 
 class VideoThread(QThread):
     frame_ready = pyqtSignal(QImage)
+    status_msg = pyqtSignal(str)
+
     def __init__(self, source, dev_id):
-        super().__init__(); self.source = int(source) if str(source).isdigit() else source; self.dev_id = dev_id; self.running = True; self.overlay = ("", (0, 255, 0), 0)
-        self.mutex = QMutex(); self.current_frame = None
+        super().__init__()
+        self.source = int(source) if str(source).isdigit() else source
+        self.dev_id = dev_id
+        self.running = True
+        self.overlay = ("", (0, 255, 0), 0)
+        self.mutex = QMutex()
+        self.current_frame = None
+
     def run(self):
         cap = cv2.VideoCapture(self.source)
+        if not cap.isOpened():
+            self.status_msg.emit(f"Не удалось открыть камеру: source={self.source}")
+            return
+
         while self.running:
             ret, frame = cap.read()
             if ret:
-                self.mutex.lock(); self.current_frame = frame.copy(); self.mutex.unlock()
+                self.mutex.lock()
+                self.current_frame = frame.copy()
+                self.mutex.unlock()
                 if self.overlay[2] > 0:
                     y0, dy = 50, 30
-                    for i, line in enumerate(self.overlay[0].split('\n')): cv2.putText(frame, line, (10, y0 + i*dy), cv2.FONT_HERSHEY_SIMPLEX, 0.7, self.overlay[1], 2)
+                    for i, line in enumerate(self.overlay[0].split('\n')):
+                        cv2.putText(frame, line, (10, y0 + i * dy), cv2.FONT_HERSHEY_SIMPLEX, 0.7, self.overlay[1], 2)
                     self.overlay = (self.overlay[0], self.overlay[1], self.overlay[2] - 1)
-                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB); h, w, ch = rgb.shape; img = QImage(rgb.data, w, h, ch*w, QImage.Format.Format_RGB888); self.frame_ready.emit(img)
-            else: self.msleep(100)
+
+                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                h, w, ch = rgb.shape
+                img = QImage(rgb.data, w, h, ch * w, QImage.Format.Format_RGB888).copy()
+                self.frame_ready.emit(img)
+            else:
+                self.status_msg.emit("Поток камеры недоступен")
+                self.msleep(200)
             self.msleep(30)
         cap.release()
-    def stop(self): self.running = False
-    def set_overlay(self, text, color): self.overlay = (text, color, 60)
+
+    def stop(self):
+        self.running = False
+
+    def set_overlay(self, text, color):
+        self.overlay = (text, color, 60)
+
     def get_frame_bytes(self):
-        self.mutex.lock(); f = self.current_frame; self.mutex.unlock()
-        if f is not None: _, enc = cv2.imencode('.jpg', f); return enc.tobytes()
+        self.mutex.lock()
+        f = self.current_frame
+        self.mutex.unlock()
+        if f is not None:
+            _, enc = cv2.imencode('.jpg', f)
+            return enc.tobytes()
         return None
 
+
 class AdminApp(QMainWindow):
-    def __init__(self):
-        super().__init__(); self.setWindowTitle("Biometry Admin Panel 2.0"); self.resize(1200, 800); self.client = BiometryClient()
+    def __init__(self, client):
+        super().__init__(); self.setWindowTitle("Biometry Admin Panel 2.0"); self.resize(1200, 800); self.client = client
         self.tabs = QTabWidget(); self.personnel_tab = PersonnelTab(self.client); self.monitor_tab = MonitoringTab(self.client)
         self.tabs.addTab(SystemTab(self.client), "⚙️ Система"); self.tabs.addTab(self.personnel_tab, "👥 Персонал")
         self.tabs.addTab(InfrastructureTab(self.client), "🏗 Инфраструктура"); self.tabs.addTab(AccessTab(self.client), "🔐 Доступ")
@@ -551,4 +808,23 @@ class AdminApp(QMainWindow):
         self.personnel_tab.stop_camera(); self.monitor_tab.stop_all_videos(); event.accept()
 
 if __name__ == "__main__":
-    app = QApplication(sys.argv); set_dark_theme(app); w = AdminApp(); w.show(); sys.exit(app.exec())
+    app = QApplication(sys.argv)
+    set_dark_theme(app)
+
+    gateway_addr = os.getenv("GATEWAY_ADDR", "127.0.0.1:50051")
+    if len(sys.argv) > 1 and sys.argv[1].strip():
+        gateway_addr = sys.argv[1].strip()
+
+    client = BiometryClient(gateway_addr)
+    if not client.wait_until_ready(timeout=6.0):
+        QMessageBox.critical(
+            None,
+            "Gateway недоступен",
+            f"Не удалось подключиться к gRPC Gateway по адресу {gateway_addr}.\n"
+            "Проверь, что gateway-service запущен (например, ./start_all.sh или docker compose up).",
+        )
+        sys.exit(1)
+
+    w = AdminApp(client)
+    w.show()
+    sys.exit(app.exec())
