@@ -33,6 +33,14 @@ fn env_i32(name: &str) -> Option<i32> {
     std::env::var(name).ok()?.trim().parse::<i32>().ok()
 }
 
+fn first_line(err: &str) -> String {
+    err.lines()
+        .next()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .unwrap_or_else(|| err.trim().to_string())
+}
+
 fn candidate_cuda_device_ids() -> Vec<i32> {
     // Для гибридных систем (iGPU + dGPU) индекс CUDA-устройства в ONNX Runtime
     // может не совпадать с ожидаемым "0". Поэтому если VISION_CUDA_DEVICE_ID
@@ -236,7 +244,8 @@ impl ModelStore {
             let (y, a, l, p) = Self::load_cpu(&yunet_path, &arcface_path, &liveness_path)?;
             (y, a, l, p, "Forced CPU mode".to_string())
         } else {
-            let mut cuda_errors = Vec::new();
+            let mut cuda_errors_short = Vec::new();
+            let mut cuda_errors_full = Vec::new();
             let mut loaded = None;
 
             for device_id in device_candidates {
@@ -263,14 +272,24 @@ impl ModelStore {
                                 break;
                             }
                             Err(e) => {
-                                cuda_errors
-                                    .push(format!("device_id={}: load failed: {:#}", device_id, e));
+                                let full = format!("device_id={}: load failed: {:#}", device_id, e);
+                                cuda_errors_short.push(format!(
+                                    "device_id={}: load failed: {}",
+                                    device_id,
+                                    first_line(&full)
+                                ));
+                                cuda_errors_full.push(full);
                             }
                         }
                     }
                     Err(e) => {
-                        cuda_errors
-                            .push(format!("device_id={}: builder failed: {:#}", device_id, e));
+                        let full = format!("device_id={}: builder failed: {:#}", device_id, e);
+                        cuda_errors_short.push(format!(
+                            "device_id={}: builder failed: {}",
+                            device_id,
+                            first_line(&full)
+                        ));
+                        cuda_errors_full.push(full);
                     }
                 }
             }
@@ -279,9 +298,10 @@ impl ModelStore {
                 ok
             } else {
                 warn!(
-                    "Не удалось инициализировать CUDA провайдер. Причины: {}. Переключение на CPU.",
-                    cuda_errors.join(" | ")
+                    "CUDA недоступна: {}. Переключение на CPU.",
+                    cuda_errors_short.join(" | ")
                 );
+                debug!("CUDA full init errors: {}", cuda_errors_full.join(" || "));
                 let (y, a, l, p) = Self::load_cpu(&yunet_path, &arcface_path, &liveness_path)?;
                 (
                     y,
@@ -290,7 +310,7 @@ impl ModelStore {
                     p,
                     format!(
                         "CUDA unavailable for all device candidates. Reasons: {}. Fallback to CPU.",
-                        cuda_errors.join(" | ")
+                        cuda_errors_short.join(" | ")
                     ),
                 )
             }

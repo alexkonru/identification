@@ -54,6 +54,11 @@ fi
 # LAZY обычно устойчивее на системах с несколькими наборами CUDA-библиотек.
 export CUDA_MODULE_LOADING="${CUDA_MODULE_LOADING:-LAZY}"
 
+
+# Делаем лог чище: оставляем полезные INFO по сервисам и WARN по onnxruntime.
+# При необходимости можно переопределить вручную через RUST_LOG.
+export RUST_LOG="${RUST_LOG:-vision_worker=info,audio_worker=info,gateway_service=info,ort::logging=warn}"
+
 mkdir -p logs
 
 # Небольшой preflight для диагностики: если nvidia-smi недоступен,
