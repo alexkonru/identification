@@ -173,73 +173,68 @@ struct ModelStore {
 
 impl ModelStore {
     fn new(models_dir: &str) -> Result<Self> {
-        // Попытка инициализации с CUDA
-        let builder_cuda_res = Session::builder()?
-            .with_optimization_level(GraphOptimizationLevel::Level3)?
-            .with_intra_threads(4)?
-            .with_execution_providers([
-                ort::execution_providers::CUDAExecutionProvider::default().build()
-            ]);
-
         let arcface_path = Path::new(models_dir).join("arcface.onnx");
         let liveness_path = Path::new(models_dir).join("MiniFASNetV2.onnx");
         let yunet_path = Path::new(models_dir).join("face_detection_yunet_2023mar.onnx");
 
-        info!("Попытка загрузки моделей с CUDA...");
+        // --- 1. Загрузка YuNet на CPU (Принудительно) ---
+        info!("Загрузка YuNet на CPU...");
+        let yunet = Session::builder()?
+            .with_optimization_level(GraphOptimizationLevel::Level3)?
+            .with_intra_threads(2)?
+            // Не добавляем CUDA провайдер для этого билдера
+            .commit_from_file(&yunet_path)
+            .context("Failed to load YuNet on CPU")?;
 
+        // --- 2. Попытка загрузки тяжелых моделей на CUDA ---
+        info!("Попытка загрузки ArcFace и Liveness с CUDA...");
+        
         let force_cpu = std::env::var("VISION_FORCE_CPU")
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(false);
 
-        let (yunet, arcface, liveness, used_provider, init_msg) = if force_cpu {
-            warn!("VISION_FORCE_CPU enabled. Starting vision-worker on CPU.");
-            let (y, a, l, p) = Self::load_cpu(&yunet_path, &arcface_path, &liveness_path)?;
-            (y, a, l, p, "Forced CPU mode".to_string())
+        let (arcface, liveness, used_provider, init_msg) = if force_cpu {
+            warn!("VISION_FORCE_CPU enabled. Heavy models on CPU.");
+            let (a, l) = Self::load_heavy_on_cpu(&arcface_path, &liveness_path)?;
+            (a, l, "CPU".to_string(), "Forced CPU mode".to_string())
         } else {
+            // Создаем CUDA билдер
+            let builder_cuda_res = Session::builder()?
+                .with_optimization_level(GraphOptimizationLevel::Level3)?
+                .with_intra_threads(4)?
+                .with_execution_providers([
+                    ort::execution_providers::CUDAExecutionProvider::default().build()
+                ]);
+
             match builder_cuda_res {
-                Ok(builder_cuda) => {
-                    match Self::try_load(&builder_cuda, &yunet_path, &arcface_path, &liveness_path)
-                    {
-                        Ok(sessions) => {
-                            info!("Успешно загружено с CUDA!");
-                            (
-                                sessions.0,
-                                sessions.1,
-                                sessions.2,
-                                "CUDA".to_string(),
-                                "Initialized successfully with CUDA".to_string(),
-                            )
+                Ok(bc) => {
+                    // Пробуем загрузить ArcFace на GPU
+                    match bc.clone().commit_from_file(&arcface_path) {
+                        Ok(arc_session) => {
+                            // Если ArcFace зашел, пробуем Liveness
+                            match bc.commit_from_file(&liveness_path) {
+                                Ok(live_session) => {
+                                    info!("ArcFace и Liveness успешно загружены на CUDA!");
+                                    (arc_session, live_session, "CUDA".to_string(), "YuNet: CPU, Others: CUDA".to_string())
+                                }
+                                Err(e) => {
+                                    warn!("Liveness не влез в GPU: {}. Откат тяжелых моделей на CPU.", e);
+                                    let (a, l) = Self::load_heavy_on_cpu(&arcface_path, &liveness_path)?;
+                                    (a, l, "CPU".to_string(), format!("Liveness GPU error: {}", e))
+                                }
+                            }
                         }
                         Err(e) => {
-                            warn!(
-                                "CUDA Builder создан, но загрузка не удалась: {}. Переключение на CPU.",
-                                e
-                            );
-                            let (y, a, l, p) =
-                                Self::load_cpu(&yunet_path, &arcface_path, &liveness_path)?;
-                            (
-                                y,
-                                a,
-                                l,
-                                p,
-                                format!("CUDA init failed: {}. Fallback to CPU.", e),
-                            )
+                            warn!("ArcFace не влез в GPU: {}. Откат тяжелых моделей на CPU.", e);
+                            let (a, l) = Self::load_heavy_on_cpu(&arcface_path, &liveness_path)?;
+                            (a, l, "CPU".to_string(), format!("ArcFace GPU error: {}", e))
                         }
                     }
                 }
                 Err(e) => {
-                    warn!(
-                        "Не удалось инициализировать CUDA провайдер: {}. Переключение на CPU.",
-                        e
-                    );
-                    let (y, a, l, p) = Self::load_cpu(&yunet_path, &arcface_path, &liveness_path)?;
-                    (
-                        y,
-                        a,
-                        l,
-                        p,
-                        format!("CUDA unavailable: {}. Fallback to CPU.", e),
-                    )
+                    warn!("CUDA провайдер недоступен: {}. Все на CPU.", e);
+                    let (a, l) = Self::load_heavy_on_cpu(&arcface_path, &liveness_path)?;
+                    (a, l, "CPU".to_string(), format!("CUDA init failed: {}", e))
                 }
             }
         };
@@ -248,11 +243,25 @@ impl ModelStore {
             yunet: Mutex::new(yunet),
             arcface: Mutex::new(arcface),
             liveness: Mutex::new(liveness),
-            provider: Mutex::new(used_provider),
+            provider: Mutex::new(used_provider.clone()),
             init_message: Mutex::new(init_msg),
             models_dir: models_dir.to_string(),
-            use_cpu_runtime: AtomicBool::new(force_cpu),
+            use_cpu_runtime: AtomicBool::new(used_provider == "CPU"),
         })
+    }
+
+    // Вспомогательный метод для загрузки ArcFace и Liveness на CPU
+    fn load_heavy_on_cpu(arc_path: &Path, live_path: &Path) -> Result<(Session, Session)> {
+        let builder = Session::builder()?
+            .with_optimization_level(GraphOptimizationLevel::Level3)?
+            .with_intra_threads(4)?;
+        
+        let arc = builder.clone().commit_from_file(arc_path)
+            .context("Failed to load ArcFace on CPU")?;
+        let live = builder.commit_from_file(live_path)
+            .context("Failed to load Liveness on CPU")?;
+        
+        Ok((arc, live))
     }
 
     fn load_cpu(

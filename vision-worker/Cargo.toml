@@ -22,5 +22,5 @@ base64 = "0.22"
 tower-http = { version = "0.5", features = ["trace", "cors"] }
 
 [dependencies.ort]
-version = "2.0.0-rc.9"
-features = ["cuda", "half"]
+version = "2.0.0-rc.11"
+features = ["cuda", "half", "load-dynamic"]
