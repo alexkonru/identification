@@ -29,3 +29,16 @@ docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi
 - `VISION_CUDA_MEM_LIMIT_MB` — лимит памяти CUDA EP для vision.
 - `AUDIO_USE_CUDA` — `1` чтобы пробовать CUDA в audio, по умолчанию `0`.
 - `AUDIO_CUDA_MEM_LIMIT_MB` — лимит памяти CUDA EP для audio.
+<<<<<<< codex/review-database-structure-and-normalization-jm5fp2
+
+## Клиент с хоста
+
+Если запускаете `client/admin.py` на хосте, используйте:
+
+```bash
+GATEWAY_ADDR=127.0.0.1:50051 python client/admin.py
+```
+
+(порт проброшен из контейнера `gateway-service` в compose).
+=======
+>>>>>>> master
