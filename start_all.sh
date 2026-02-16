@@ -20,8 +20,10 @@ sleep 1
 # --------------------------
 # По умолчанию vision НЕ принудительно на CPU.
 export VISION_FORCE_CPU="${VISION_FORCE_CPU:-0}"
-# Идентификатор GPU (обычно 0 на однокарточной системе).
-export VISION_CUDA_DEVICE_ID="${VISION_CUDA_DEVICE_ID:-0}"
+# Идентификатор GPU.
+# Если оставить пустым, vision-worker сам попробует несколько device_id (0..3)
+# и выберет рабочий (полезно для гибридной графики).
+export VISION_CUDA_DEVICE_ID="${VISION_CUDA_DEVICE_ID:-}"
 # Лимит памяти CUDA EP для vision (в MB).
 # Для MX230 (2GB) безопасно начинать с 1024..1536.
 export VISION_CUDA_MEM_LIMIT_MB="${VISION_CUDA_MEM_LIMIT_MB:-1536}"

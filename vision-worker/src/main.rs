@@ -33,12 +33,20 @@ fn env_i32(name: &str) -> Option<i32> {
     std::env::var(name).ok()?.trim().parse::<i32>().ok()
 }
 
-fn build_cuda_builder() -> Result<SessionBuilder> {
-    let mut cuda = ort::execution_providers::CUDAExecutionProvider::default();
-
+fn candidate_cuda_device_ids() -> Vec<i32> {
+    // Для гибридных систем (iGPU + dGPU) индекс CUDA-устройства в ONNX Runtime
+    // может не совпадать с ожидаемым "0". Поэтому если VISION_CUDA_DEVICE_ID
+    // не задан, перебираем небольшой диапазон индексов.
     if let Some(device_id) = env_i32("VISION_CUDA_DEVICE_ID") {
-        cuda = cuda.with_device_id(device_id);
+        vec![device_id]
+    } else {
+        vec![0, 1, 2, 3]
     }
+}
+
+fn build_cuda_builder(device_id: i32) -> Result<SessionBuilder> {
+    let mut cuda =
+        ort::execution_providers::CUDAExecutionProvider::default().with_device_id(device_id);
 
     if let Some(mem_limit_mb) = env_usize("VISION_CUDA_MEM_LIMIT_MB") {
         if mem_limit_mb > 0 {
@@ -46,22 +54,17 @@ fn build_cuda_builder() -> Result<SessionBuilder> {
         }
     }
 
-    // Keep CUDA initialization and first-run memory pressure low to avoid runtime OOMs.
+    // Снижаем пиковое потребление VRAM при инициализации.
     cuda = cuda
         .with_conv_algorithm_search(ort::execution_providers::cuda::ConvAlgorithmSearch::Heuristic)
         .with_conv_max_workspace(false)
         .with_arena_extend_strategy(ort::execution_providers::ArenaExtendStrategy::SameAsRequested);
 
-    info!(
-        "CUDA config: device_id={:?}, mem_limit_mb={:?}, conv_search=Heuristic, conv_max_workspace=0",
-        env_i32("VISION_CUDA_DEVICE_ID"),
-        env_usize("VISION_CUDA_MEM_LIMIT_MB")
-    );
-
     Session::builder()?
         .with_optimization_level(GraphOptimizationLevel::Level3)?
         .with_intra_threads(4)?
         .with_execution_providers([cuda.build().error_on_failure()])
+        .with_session_log_level(ort::logging::LogLevel::Warning)?
         .context("Failed to create session builder with CUDA execution provider")
 }
 
@@ -213,69 +216,83 @@ struct ModelStore {
 
 impl ModelStore {
     fn new(models_dir: &str) -> Result<Self> {
-        // Попытка инициализации с CUDA
-        let builder_cuda_res = build_cuda_builder();
-
         let arcface_path = Path::new(models_dir).join("arcface.onnx");
         let liveness_path = Path::new(models_dir).join("MiniFASNetV2.onnx");
         let yunet_path = Path::new(models_dir).join("face_detection_yunet_2023mar.onnx");
 
-        info!("Попытка загрузки моделей с CUDA...");
-
         let force_cpu = std::env::var("VISION_FORCE_CPU")
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(false);
+
+        let device_candidates = candidate_cuda_device_ids();
+        info!(
+            "Попытка загрузки моделей с CUDA... candidates={:?}, mem_limit_mb={:?}",
+            device_candidates,
+            env_usize("VISION_CUDA_MEM_LIMIT_MB")
+        );
 
         let (yunet, arcface, liveness, used_provider, init_msg) = if force_cpu {
             warn!("VISION_FORCE_CPU enabled. Starting vision-worker on CPU.");
             let (y, a, l, p) = Self::load_cpu(&yunet_path, &arcface_path, &liveness_path)?;
             (y, a, l, p, "Forced CPU mode".to_string())
         } else {
-            match builder_cuda_res {
-                Ok(builder_cuda) => {
-                    match Self::try_load(&builder_cuda, &yunet_path, &arcface_path, &liveness_path)
-                    {
-                        Ok(sessions) => {
-                            info!("Успешно загружено с CUDA!");
-                            (
-                                sessions.0,
-                                sessions.1,
-                                sessions.2,
-                                "CUDA".to_string(),
-                                "Initialized successfully with CUDA".to_string(),
-                            )
-                        }
-                        Err(e) => {
-                            warn!(
-                                "CUDA Builder создан, но загрузка не удалась: {}. Переключение на CPU.",
-                                e
-                            );
-                            let (y, a, l, p) =
-                                Self::load_cpu(&yunet_path, &arcface_path, &liveness_path)?;
-                            (
-                                y,
-                                a,
-                                l,
-                                p,
-                                format!("CUDA init failed: {}. Fallback to CPU.", e),
-                            )
+            let mut cuda_errors = Vec::new();
+            let mut loaded = None;
+
+            for device_id in device_candidates {
+                match build_cuda_builder(device_id) {
+                    Ok(builder_cuda) => {
+                        match Self::try_load(
+                            &builder_cuda,
+                            &yunet_path,
+                            &arcface_path,
+                            &liveness_path,
+                        ) {
+                            Ok(sessions) => {
+                                info!("Успешно загружено с CUDA (device_id={})", device_id);
+                                loaded = Some((
+                                    sessions.0,
+                                    sessions.1,
+                                    sessions.2,
+                                    format!("CUDA:{}", device_id),
+                                    format!(
+                                        "Initialized successfully with CUDA (device_id={})",
+                                        device_id
+                                    ),
+                                ));
+                                break;
+                            }
+                            Err(e) => {
+                                cuda_errors
+                                    .push(format!("device_id={}: load failed: {:#}", device_id, e));
+                            }
                         }
                     }
+                    Err(e) => {
+                        cuda_errors
+                            .push(format!("device_id={}: builder failed: {:#}", device_id, e));
+                    }
                 }
-                Err(e) => {
-                    warn!(
-                        "Не удалось инициализировать CUDA провайдер: {}. Переключение на CPU.",
-                        e
-                    );
-                    let (y, a, l, p) = Self::load_cpu(&yunet_path, &arcface_path, &liveness_path)?;
-                    (
-                        y,
-                        a,
-                        l,
-                        p,
-                        format!("CUDA unavailable: {}. Fallback to CPU.", e),
-                    )
-                }
+            }
+
+            if let Some(ok) = loaded {
+                ok
+            } else {
+                warn!(
+                    "Не удалось инициализировать CUDA провайдер. Причины: {}. Переключение на CPU.",
+                    cuda_errors.join(" | ")
+                );
+                let (y, a, l, p) = Self::load_cpu(&yunet_path, &arcface_path, &liveness_path)?;
+                (
+                    y,
+                    a,
+                    l,
+                    p,
+                    format!(
+                        "CUDA unavailable for all device candidates. Reasons: {}. Fallback to CPU.",
+                        cuda_errors.join(" | ")
+                    ),
+                )
             }
         };
 
