@@ -18,5 +18,15 @@ ndarray = "0.16"
 byteorder = "1.5"
 
 [dependencies.ort]
-version = "=2.0.0-rc.9"
-features = ["cuda", "half"]
+version = "=2.0.0-rc.11"
+default-features = false
+features = [
+    "std",
+    "ndarray",
+    "tracing",
+    "download-binaries",
+    "copy-dylibs",
+    "tls-native",
+    "cuda",
+    "half",
+]
