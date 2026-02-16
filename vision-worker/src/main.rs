@@ -51,7 +51,6 @@ fn candidate_cuda_device_ids() -> Vec<i32> {
         vec![0, 1, 2, 3]
     }
 }
-
 fn build_cuda_builder(device_id: i32) -> Result<SessionBuilder> {
     let mut cuda =
         ort::execution_providers::CUDAExecutionProvider::default().with_device_id(device_id);
@@ -62,18 +61,21 @@ fn build_cuda_builder(device_id: i32) -> Result<SessionBuilder> {
         }
     }
 
-    // Снижаем пиковое потребление VRAM при инициализации.
     cuda = cuda
         .with_conv_algorithm_search(ort::execution_providers::cuda::ConvAlgorithmSearch::Heuristic)
         .with_conv_max_workspace(false)
         .with_arena_extend_strategy(ort::execution_providers::ArenaExtendStrategy::SameAsRequested);
 
-    Session::builder()?
+    // Убираем ? у промежуточных вызовов и оборачиваем всё в один контекст, 
+    // либо вешаем контекст на финальный результат билдера.
+    Session::builder()
+        .context("Failed to initialize SessionBuilder")?
         .with_optimization_level(GraphOptimizationLevel::Level3)?
         .with_intra_threads(4)?
         .with_execution_providers([cuda.build().error_on_failure()])?
-        .with_session_log_level(ort::logging::LogLevel::Warning)?
-        .context("Failed to create session builder with CUDA execution provider")
+        .with_log_level(ort::logging::LogLevel::Warning)
+        // Мы не ставим здесь ?, чтобы вернуть Result<SessionBuilder>
+        .context("Failed to configure session builder with CUDA execution provider")
 }
 
 // --- Helper Structs for Yunet ---
