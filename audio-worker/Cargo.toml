@@ -19,4 +19,4 @@ byteorder = "1.5"
 
 [dependencies.ort]
 version = "2.0.0-rc.11"
-features = ["cuda", "half", "load-dynamic"]
+features = ["cuda", "half"]

@@ -33,7 +33,7 @@ check_env() {
 
 # --- 2. Настройка окружения (Clean Environment) ---
 # Указываем ORT грузить системную либу во время работы (runtime)
-export ORT_DYLIB_PATH="/usr/lib/libonnxruntime.so"
+export ORT_DYLIB_PATH=/usr/lib/libonnxruntime.so
 
 # Пути к библиотекам CUDA и cuDNN для динамического линковщика
 export CUDA_HOME="/opt/cuda"
