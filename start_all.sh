@@ -45,12 +45,6 @@ if [ "${USE_CUSTOM_ORT_DYLIB:-0}" != "1" ]; then
   unset ORT_DYLIB_PATH || true
 fi
 
-# Опциональное подключение CUDA-библиотек из Ollama-bundle.
-# Путь НЕ меняем, только используем при явном флаге.
-if [ "${USE_OLLAMA_CUDA_LIBS:-0}" = "1" ] && [ -d "/usr/local/lib/ollama/cuda_v12" ]; then
-  export LD_LIBRARY_PATH="/usr/local/lib/ollama/cuda_v12:${LD_LIBRARY_PATH:-}"
-fi
-
 # LAZY обычно устойчивее на системах с несколькими наборами CUDA-библиотек.
 export CUDA_MODULE_LOADING="${CUDA_MODULE_LOADING:-LAZY}"
 

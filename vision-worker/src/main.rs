@@ -10,7 +10,6 @@ use shared::biometry::{
     BioResult, Empty, ImageFrame, ServiceStatus,
     vision_server::{Vision, VisionServer},
 };
-use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::{
     Arc, Mutex,
@@ -34,29 +33,12 @@ fn env_i32(name: &str) -> Option<i32> {
     std::env::var(name).ok()?.trim().parse::<i32>().ok()
 }
 
-fn compact_cuda_error(err: &str) -> String {
-    let mut text = err
-        .lines()
-        .map(str::trim)
+fn first_line(err: &str) -> String {
+    err.lines()
+        .next()
+        .map(|l| l.trim().to_string())
         .filter(|l| !l.is_empty())
-        .collect::<Vec<_>>()
-        .join(" ");
-
-    // Самая полезная часть ошибки загрузки CUDA EP обычно идёт после "with error:".
-    if let Some(idx) = text.find("with error:") {
-        text = text[(idx + "with error:".len())..].trim().to_string();
-    } else if let Some(idx) = text.find("FAIL :") {
-        text = text[(idx + "FAIL :".len())..].trim().to_string();
-    }
-
-    // Урезаем слишком длинные сообщения, чтобы WARN оставался читаемым.
-    const MAX_LEN: usize = 220;
-    if text.len() > MAX_LEN {
-        text.truncate(MAX_LEN);
-        text.push('…');
-    }
-
-    text
+        .unwrap_or_else(|| err.trim().to_string())
 }
 
 fn candidate_cuda_device_ids() -> Vec<i32> {
@@ -69,7 +51,6 @@ fn candidate_cuda_device_ids() -> Vec<i32> {
         vec![0, 1, 2, 3]
     }
 }
-
 fn build_cuda_builder(device_id: i32) -> Result<SessionBuilder> {
     let mut cuda =
         ort::execution_providers::CUDAExecutionProvider::default().with_device_id(device_id);
@@ -80,18 +61,21 @@ fn build_cuda_builder(device_id: i32) -> Result<SessionBuilder> {
         }
     }
 
-    // Снижаем пиковое потребление VRAM при инициализации.
     cuda = cuda
         .with_conv_algorithm_search(ort::execution_providers::cuda::ConvAlgorithmSearch::Heuristic)
         .with_conv_max_workspace(false)
         .with_arena_extend_strategy(ort::execution_providers::ArenaExtendStrategy::SameAsRequested);
 
-    Session::builder()?
+    // Убираем ? у промежуточных вызовов и оборачиваем всё в один контекст, 
+    // либо вешаем контекст на финальный результат билдера.
+    Session::builder()
+        .context("Failed to initialize SessionBuilder")?
         .with_optimization_level(GraphOptimizationLevel::Level3)?
         .with_intra_threads(4)?
         .with_execution_providers([cuda.build().error_on_failure()])?
-        .with_session_log_level(ort::logging::LogLevel::Warning)?
-        .context("Failed to create session builder with CUDA execution provider")
+        .with_log_level(ort::logging::LogLevel::Warning)
+        // Мы не ставим здесь ?, чтобы вернуть Result<SessionBuilder>
+        .context("Failed to configure session builder with CUDA execution provider")
 }
 
 // --- Helper Structs for Yunet ---
@@ -262,7 +246,7 @@ impl ModelStore {
             let (y, a, l, p) = Self::load_cpu(&yunet_path, &arcface_path, &liveness_path)?;
             (y, a, l, p, "Forced CPU mode".to_string())
         } else {
-            let mut cuda_errors_short: Vec<(i32, &'static str, String)> = Vec::new();
+            let mut cuda_errors_short = Vec::new();
             let mut cuda_errors_full = Vec::new();
             let mut loaded = None;
 
@@ -290,30 +274,24 @@ impl ModelStore {
                                 break;
                             }
                             Err(e) => {
-                                let details = format!("{:#}", e);
-                                cuda_errors_short.push((
-                                    device_id,
-                                    "load",
-                                    compact_cuda_error(&details),
-                                ));
-                                cuda_errors_full.push(format!(
+                                let full = format!("device_id={}: load failed: {:#}", device_id, e);
+                                cuda_errors_short.push(format!(
                                     "device_id={}: load failed: {}",
-                                    device_id, details
+                                    device_id,
+                                    first_line(&full)
                                 ));
+                                cuda_errors_full.push(full);
                             }
                         }
                     }
                     Err(e) => {
-                        let details = format!("{:#}", e);
-                        cuda_errors_short.push((
-                            device_id,
-                            "builder",
-                            compact_cuda_error(&details),
-                        ));
-                        cuda_errors_full.push(format!(
+                        let full = format!("device_id={}: builder failed: {:#}", device_id, e);
+                        cuda_errors_short.push(format!(
                             "device_id={}: builder failed: {}",
-                            device_id, details
+                            device_id,
+                            first_line(&full)
                         ));
+                        cuda_errors_full.push(full);
                     }
                 }
             }
@@ -321,21 +299,10 @@ impl ModelStore {
             if let Some(ok) = loaded {
                 ok
             } else {
-                let mut grouped: BTreeMap<String, Vec<String>> = BTreeMap::new();
-                for (device_id, stage, reason) in &cuda_errors_short {
-                    grouped
-                        .entry(reason.clone())
-                        .or_default()
-                        .push(format!("{}:{}", device_id, stage));
-                }
-
-                let compact_summary = grouped
-                    .into_iter()
-                    .map(|(reason, sources)| format!("[{}] {}", sources.join(","), reason))
-                    .collect::<Vec<_>>()
-                    .join(" | ");
-
-                warn!("CUDA недоступна: {}. Переключение на CPU.", compact_summary);
+                warn!(
+                    "CUDA недоступна: {}. Переключение на CPU.",
+                    cuda_errors_short.join(" | ")
+                );
                 debug!("CUDA full init errors: {}", cuda_errors_full.join(" || "));
                 let (y, a, l, p) = Self::load_cpu(&yunet_path, &arcface_path, &liveness_path)?;
                 (
@@ -345,7 +312,7 @@ impl ModelStore {
                     p,
                     format!(
                         "CUDA unavailable for all device candidates. Reasons: {}. Fallback to CPU.",
-                        compact_summary
+                        cuda_errors_short.join(" | ")
                     ),
                 )
             }
