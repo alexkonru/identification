@@ -138,14 +138,55 @@ impl ModelStore {
         let aasist_path = Path::new(models_dir).join("aasist.onnx");
         let ecapa_path = Path::new(models_dir).join("voxceleb_ECAPA512_LM.onnx");
 
-        let vad = builder.clone().commit_from_file(&vad_path)
-            .with_context(|| format!("Failed to load VAD from {:?}", vad_path))?;
+        let load_with_builder =
+            |builder: &ort::session::SessionBuilder| -> Result<(Session, Session)> {
+                let aasist = builder
+                    .clone()
+                    .commit_from_file(&aasist_path)
+                    .with_context(|| format!("Failed to load AASIST from {:?}", aasist_path))?;
 
-        let aasist = builder.clone().commit_from_file(&aasist_path)
-            .with_context(|| format!("Failed to load AASIST from {:?}", aasist_path))?;
+                let ecapa = builder
+                    .clone()
+                    .commit_from_file(&ecapa_path)
+                    .with_context(|| format!("Failed to load ECAPA from {:?}", ecapa_path))?;
 
-        let ecapa = builder.clone().commit_from_file(&ecapa_path)
-            .with_context(|| format!("Failed to load ECAPA from {:?}", ecapa_path))?;
+                Ok((aasist, ecapa))
+            };
+
+        if use_cuda {
+            match build_cuda_audio_builder() {
+                Ok(builder_cuda) => match load_with_builder(&builder_cuda) {
+                    Ok((aasist, ecapa)) => {
+                        return Ok(Self {
+                            aasist: Mutex::new(aasist),
+                            ecapa: Mutex::new(ecapa),
+                            provider: "CUDA".to_string(),
+                            init_message: "Audio initialized on CUDA".to_string(),
+                        });
+                    }
+                    Err(e) => {
+                        info!("Audio CUDA load failed (fallback to CPU): {}", e);
+                    }
+                },
+                Err(e) => {
+                    info!("Audio CUDA builder failed (fallback to CPU): {}", e);
+                }
+            }
+        }
+
+        let builder_cpu = Session::builder()?
+            .with_optimization_level(GraphOptimizationLevel::Level3)?
+            .with_intra_threads(4)?;
+        let (aasist, ecapa) =
+            load_with_builder(&builder_cpu).context("Failed to load audio models on CPU")?;
+
+        let init_message = if force_cpu {
+            "Audio forced to CPU (AUDIO_FORCE_CPU=1)".to_string()
+        } else if use_cuda {
+            "Audio fallback to CPU".to_string()
+        } else {
+            "Audio initialized on CPU".to_string()
+        };
 
                 Ok((aasist, ecapa))
             };
@@ -263,8 +304,8 @@ impl Audio for AudioService {
                     is_live: false,
                     liveness_score: 0.0,
                     embedding: vec![],
-                    error_msg: "No speech detected".to_string(),
-                    execution_provider: "CPU".to_string(),
+                    error_msg: "No speech detected (energy gate)".to_string(),
+                    execution_provider: self.models.provider.clone(),
                 }));
             }
         }
