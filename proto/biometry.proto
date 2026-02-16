@@ -146,22 +146,37 @@ message GrantAccessRequest {
 
 message SetAccessRulesRequest {
   int32 user_id = 1;
-  repeated int32 allowed_room_ids = 2; 
+  repeated int32 allowed_room_ids = 2;
+  repeated int32 allowed_zone_ids = 3;
 }
 
 message GetUserAccessResponse {
   repeated int32 allowed_room_ids = 1;
+  repeated int32 allowed_zone_ids = 2;
 }
 
 message CheckAccessRequest {
   int32 device_id = 1;
   bytes image = 2;
+  bytes audio = 3;
+  uint32 audio_sample_rate = 4;
 }
 
 message AccessCheckResponse {
   bool granted = 1;
   string user_name = 2;
   string message = 3;
+  bool face_detected = 4;
+  bool face_live = 5;
+  float face_liveness_score = 6;
+  float face_distance = 7;
+  bool face_match = 8;
+  bool voice_provided = 9;
+  bool voice_detected = 10;
+  float voice_distance = 11;
+  bool voice_match = 12;
+  float final_confidence = 13;
+  string decision_stage = 14;
 }
 
 // Vision & Audio
