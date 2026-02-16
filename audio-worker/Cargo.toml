@@ -18,5 +18,5 @@ ndarray = "0.16"
 byteorder = "1.5"
 
 [dependencies.ort]
-version = "2.0.0-rc.9"
+version = "=2.0.0-rc.9"
 features = ["cuda", "half"]
