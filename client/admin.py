@@ -52,15 +52,33 @@ class BiometryClient:
     def wait_until_ready(self, total_timeout=45.0, probe_timeout=2.0):
         # Для Docker-старта gateway может подняться не мгновенно:
         # контейнер уже существует, но gRPC сервис ещё инициализируется.
+        # Важно: GetSystemStatus внутри gateway опрашивает audio/vision workers,
+        # поэтому при их старте/недоступности этот RPC может таймаутить,
+        # даже если сам gateway уже доступен.
         deadline = time.time() + total_timeout
         while time.time() < deadline:
             try:
                 grpc.channel_ready_future(self.channel).result(timeout=probe_timeout)
-                # Real RPC probe: avoids false-positive "channel ready" states
+            except grpc.FutureTimeoutError:
+                time.sleep(0.5)
+                continue
+
+            try:
+                # Fast probe when available.
                 self.stub.GetSystemStatus(biometry_pb2.Empty(), timeout=probe_timeout)
                 return True
-            except (grpc.FutureTimeoutError, grpc.RpcError):
+            except grpc.RpcError as e:
+                # Gateway может быть уже поднят, но probe зависеть от worker'ов.
+                # В таких кейсах считаем подключение к gateway успешным.
+                if e.code() in {
+                    grpc.StatusCode.DEADLINE_EXCEEDED,
+                    grpc.StatusCode.UNIMPLEMENTED,
+                    grpc.StatusCode.UNKNOWN,
+                    grpc.StatusCode.INTERNAL,
+                }:
+                    return True
                 time.sleep(0.5)
+
         return False
 
 
