@@ -61,7 +61,7 @@ fn build_cuda_builder() -> Result<SessionBuilder> {
     Session::builder()?
         .with_optimization_level(GraphOptimizationLevel::Level3)?
         .with_intra_threads(4)?
-        .with_execution_providers([cuda.build()])
+        .with_execution_providers([cuda.build().error_on_failure()])
         .context("Failed to create session builder with CUDA execution provider")
 }
 

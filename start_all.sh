@@ -1,31 +1,66 @@
 #!/bin/bash
 set -euo pipefail
 
-# Kill existing processes
+# ------------------------------------------------------------
+# Скрипт запуска всей системы (audio + vision + gateway)
+# Цель:
+#   1) максимально использовать GPU для vision,
+#   2) не ронять систему при проблемах CUDA/ORT,
+#   3) сохранить предсказуемый и диагностируемый запуск.
+# ------------------------------------------------------------
+
+# Останавливаем старые процессы, если они остались.
 "${PKILL_BIN:-pkill}" -f gateway-service >/dev/null 2>&1 || true
 "${PKILL_BIN:-pkill}" -f vision-worker >/dev/null 2>&1 || true
 "${PKILL_BIN:-pkill}" -f audio-worker >/dev/null 2>&1 || true
 sleep 1
 
-# Runtime toggles
+# --------------------------
+# Настройки Vision (GPU-first)
+# --------------------------
+# По умолчанию vision НЕ принудительно на CPU.
 export VISION_FORCE_CPU="${VISION_FORCE_CPU:-0}"
+# Идентификатор GPU (обычно 0 на однокарточной системе).
 export VISION_CUDA_DEVICE_ID="${VISION_CUDA_DEVICE_ID:-0}"
-export VISION_CUDA_MEM_LIMIT_MB="${VISION_CUDA_MEM_LIMIT_MB:-2048}"
+# Лимит памяти CUDA EP для vision (в MB).
+# Для MX230 (2GB) безопасно начинать с 1024..1536.
+export VISION_CUDA_MEM_LIMIT_MB="${VISION_CUDA_MEM_LIMIT_MB:-1536}"
 
-# Avoid stale manually-pinned ORT library unless user explicitly wants it.
+# --------------------------
+# Настройки Audio
+# --------------------------
+# ВАЖНО: по умолчанию аудио оставляем на CPU, чтобы не "съедать" VRAM,
+# которую лучше отдать vision-моделям.
+# При желании можно включить GPU явно: AUDIO_USE_CUDA=1
+export AUDIO_USE_CUDA="${AUDIO_USE_CUDA:-0}"
+export AUDIO_FORCE_CPU="${AUDIO_FORCE_CPU:-0}"
+# Лимит VRAM для audio CUDA EP (если AUDIO_USE_CUDA=1).
+export AUDIO_CUDA_MEM_LIMIT_MB="${AUDIO_CUDA_MEM_LIMIT_MB:-256}"
+
+# Если пользователь не попросил явно закрепить ORT_DYLIB_PATH,
+# убираем его, чтобы не подхватить случайную несовместимую библиотеку.
 if [ "${USE_CUSTOM_ORT_DYLIB:-0}" != "1" ]; then
   unset ORT_DYLIB_PATH || true
 fi
 
-# Optional CUDA libs from Ollama bundle when requested.
+# Опциональное подключение CUDA-библиотек из Ollama-bundle.
+# Путь НЕ меняем, только используем при явном флаге.
 if [ "${USE_OLLAMA_CUDA_LIBS:-0}" = "1" ] && [ -d "/usr/local/lib/ollama/cuda_v12" ]; then
   export LD_LIBRARY_PATH="/usr/local/lib/ollama/cuda_v12:${LD_LIBRARY_PATH:-}"
 fi
 
-# Make CUDA provider loading more predictable in mixed setups.
+# LAZY обычно устойчивее на системах с несколькими наборами CUDA-библиотек.
 export CUDA_MODULE_LOADING="${CUDA_MODULE_LOADING:-LAZY}"
 
 mkdir -p logs
+
+# Небольшой preflight для диагностики: если nvidia-smi недоступен,
+# просто пишем предупреждение и продолжаем (CPU fallback в коде сохранён).
+if command -v nvidia-smi >/dev/null 2>&1; then
+  nvidia-smi > logs/nvidia-smi.log 2>&1 || true
+else
+  echo "WARN: nvidia-smi not found" > logs/nvidia-smi.log
+fi
 
 start_service() {
   local name="$1"
@@ -40,10 +75,13 @@ is_pid_alive() {
   kill -0 "$pid" >/dev/null 2>&1
 }
 
+# Запускаем audio и vision раньше gateway,
+# чтобы gateway подключался к уже живым backend-сервисам.
 start_service "audio" cargo run -p audio-worker
 start_service "vision" cargo run -p vision-worker
 sleep 2
 
+# Fail-fast: если vision умер на старте, сразу останавливаемся.
 if [ -f logs/vision.pid ]; then
   vision_pid="$(cat logs/vision.pid)"
   if ! is_pid_alive "$vision_pid"; then
@@ -55,6 +93,7 @@ fi
 start_service "gateway" cargo run -p gateway-service
 sleep 2
 
+# Fail-fast: если gateway умер, считаем запуск неуспешным.
 if [ -f logs/gateway.pid ]; then
   gateway_pid="$(cat logs/gateway.pid)"
   if ! is_pid_alive "$gateway_pid"; then
@@ -64,7 +103,8 @@ if [ -f logs/gateway.pid ]; then
 fi
 
 echo "Services started."
-echo "  Audio log:   logs/audio.log"
-echo "  Vision log:  logs/vision.log"
-echo "  Gateway log: logs/gateway.log"
+echo "  Audio log:      logs/audio.log"
+echo "  Vision log:     logs/vision.log"
+echo "  Gateway log:    logs/gateway.log"
+echo "  GPU snapshot:   logs/nvidia-smi.log"
 echo "Tip: tail -f logs/vision.log"

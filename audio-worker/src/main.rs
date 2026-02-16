@@ -19,6 +19,40 @@ use tracing::{error, info};
 
 const TARGET_AUDIO_SAMPLE_LENGTH: usize = 64000; // 4 seconds of 16kHz audio
 
+fn env_bool(name: &str, default: bool) -> bool {
+    std::env::var(name)
+        .ok()
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(default)
+}
+
+fn env_usize(name: &str) -> Option<usize> {
+    std::env::var(name).ok()?.trim().parse::<usize>().ok()
+}
+
+fn build_cuda_audio_builder() -> Result<ort::session::SessionBuilder> {
+    // Важно: для аудио по умолчанию используем CPU, так как на слабых GPU
+    // выгода обычно ниже, а VRAM лучше оставить под vision.
+    let mut cuda = ort::execution_providers::CUDAExecutionProvider::default();
+
+    if let Some(mem_limit_mb) = env_usize("AUDIO_CUDA_MEM_LIMIT_MB") {
+        if mem_limit_mb > 0 {
+            cuda = cuda.with_memory_limit(mem_limit_mb.saturating_mul(1024 * 1024));
+        }
+    }
+
+    cuda = cuda
+        .with_conv_algorithm_search(ort::execution_providers::cuda::ConvAlgorithmSearch::Heuristic)
+        .with_conv_max_workspace(false)
+        .with_arena_extend_strategy(ort::execution_providers::ArenaExtendStrategy::SameAsRequested);
+
+    Session::builder()?
+        .with_optimization_level(GraphOptimizationLevel::Level3)?
+        .with_intra_threads(2)?
+        .with_execution_providers([cuda.build().error_on_failure()])
+        .context("Failed to create AUDIO CUDA session builder")
+}
+
 // --- Helper Functions ---
 
 fn bytes_to_f32(bytes: &[u8]) -> Vec<f32> {
@@ -87,32 +121,78 @@ fn resample(input: &[f32], from_rate: u32, to_rate: u32) -> Result<Vec<f32>> {
 struct ModelStore {
     aasist: Mutex<Session>,
     ecapa: Mutex<Session>,
+    provider: String,
+    init_message: String,
 }
 
 impl ModelStore {
     fn new(models_dir: &str) -> Result<Self> {
-        let builder = Session::builder()?
-            .with_optimization_level(GraphOptimizationLevel::Level3)?
-            .with_intra_threads(4)?;
+        // Для аудио по умолчанию выбираем CPU, чтобы не отбирать VRAM у vision
+        // на малых видеокартах (например MX230 2GB).
+        // При необходимости можно явно включить GPU: AUDIO_USE_CUDA=1.
+        let force_cpu = env_bool("AUDIO_FORCE_CPU", false);
+        let use_cuda = env_bool("AUDIO_USE_CUDA", false) && !force_cpu;
 
-        info!("Loading models from {}", models_dir);
+        info!("Loading audio models from {}", models_dir);
 
         let aasist_path = Path::new(models_dir).join("aasist.onnx");
         let ecapa_path = Path::new(models_dir).join("voxceleb_ECAPA512_LM.onnx");
 
-        let aasist = builder
-            .clone()
-            .commit_from_file(&aasist_path)
-            .with_context(|| format!("Failed to load AASIST from {:?}", aasist_path))?;
+        let load_with_builder =
+            |builder: &ort::session::SessionBuilder| -> Result<(Session, Session)> {
+                let aasist = builder
+                    .clone()
+                    .commit_from_file(&aasist_path)
+                    .with_context(|| format!("Failed to load AASIST from {:?}", aasist_path))?;
 
-        let ecapa = builder
-            .clone()
-            .commit_from_file(&ecapa_path)
-            .with_context(|| format!("Failed to load ECAPA from {:?}", ecapa_path))?;
+                let ecapa = builder
+                    .clone()
+                    .commit_from_file(&ecapa_path)
+                    .with_context(|| format!("Failed to load ECAPA from {:?}", ecapa_path))?;
+
+                Ok((aasist, ecapa))
+            };
+
+        if use_cuda {
+            match build_cuda_audio_builder() {
+                Ok(builder_cuda) => match load_with_builder(&builder_cuda) {
+                    Ok((aasist, ecapa)) => {
+                        return Ok(Self {
+                            aasist: Mutex::new(aasist),
+                            ecapa: Mutex::new(ecapa),
+                            provider: "CUDA".to_string(),
+                            init_message: "Audio initialized on CUDA".to_string(),
+                        });
+                    }
+                    Err(e) => {
+                        info!("Audio CUDA load failed (fallback to CPU): {}", e);
+                    }
+                },
+                Err(e) => {
+                    info!("Audio CUDA builder failed (fallback to CPU): {}", e);
+                }
+            }
+        }
+
+        let builder_cpu = Session::builder()?
+            .with_optimization_level(GraphOptimizationLevel::Level3)?
+            .with_intra_threads(4)?;
+        let (aasist, ecapa) =
+            load_with_builder(&builder_cpu).context("Failed to load audio models on CPU")?;
+
+        let init_message = if force_cpu {
+            "Audio forced to CPU (AUDIO_FORCE_CPU=1)".to_string()
+        } else if use_cuda {
+            "Audio fallback to CPU".to_string()
+        } else {
+            "Audio initialized on CPU".to_string()
+        };
 
         Ok(Self {
             aasist: Mutex::new(aasist),
             ecapa: Mutex::new(ecapa),
+            provider: "CPU".to_string(),
+            init_message,
         })
     }
 }
@@ -134,8 +214,8 @@ impl Audio for AudioService {
     ) -> Result<Response<ServiceStatus>, Status> {
         Ok(Response::new(ServiceStatus {
             online: true,
-            device: "CPU".to_string(),
-            message: "OK".to_string(),
+            device: self.models.provider.clone(),
+            message: self.models.init_message.clone(),
         }))
     }
 
@@ -187,7 +267,7 @@ impl Audio for AudioService {
                     liveness_score: 0.0,
                     embedding: vec![],
                     error_msg: "No speech detected (energy gate)".to_string(),
-                    execution_provider: "CPU".to_string(),
+                    execution_provider: self.models.provider.clone(),
                 }));
             }
         }
@@ -256,7 +336,7 @@ impl Audio for AudioService {
             liveness_score,
             embedding: embedding_vec,
             error_msg: String::new(),
-            execution_provider: "CPU".to_string(),
+            execution_provider: self.models.provider.clone(),
         }))
     }
     async fn shutdown(&self, _request: Request<Empty>) -> Result<Response<Empty>, Status> {
@@ -278,7 +358,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let possible_paths = ["audio-worker/models", "models"];
     let mut models_dir = "models"; // fallback
     for path in &possible_paths {
-        if Path::new(path).exists() && Path::new(path).join("silero_vad.onnx").exists() {
+        if Path::new(path).exists() && Path::new(path).join("aasist.onnx").exists() {
             models_dir = path;
             break;
         }
@@ -303,7 +383,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let addr = "0.0.0.0:50053".parse()?; // Different port than vision (50052)
-    info!("Audio Worker listening on {}", addr);
+    info!(
+        "Audio Worker listening on {} (Provider: {})",
+        addr, models.provider
+    );
 
     let (shutdown_tx, mut shutdown_rx) = mpsc::channel(1);
 
