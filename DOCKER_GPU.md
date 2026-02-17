@@ -32,6 +32,8 @@ docker run --rm --gpus all nvidia/cuda:12.6.0-base-ubuntu24.04 nvidia-smi
 - `VISION_FORCE_CPU=1`
 - `AUDIO_FORCE_CPU=1`
 - `AUDIO_USE_CUDA=0`
+- `VISION_INTRA_THREADS=4`
+- `AUDIO_INTRA_THREADS=2`
 
 ### GPU-режим (явно)
 
@@ -44,6 +46,12 @@ VISION_FORCE_CPU=0 AUDIO_FORCE_CPU=0 AUDIO_USE_CUDA=1 ./start_docker.sh
 ```bash
 VISION_CUDA_MEM_LIMIT_MB=1024 AUDIO_CUDA_MEM_LIMIT_MB=256 \
 VISION_FORCE_CPU=0 AUDIO_FORCE_CPU=0 AUDIO_USE_CUDA=1 ./start_docker.sh
+```
+
+При необходимости подстрой потоки (для Ryzen 5 3500U обычно достаточно):
+
+```bash
+VISION_INTRA_THREADS=4 AUDIO_INTRA_THREADS=2 ./start_docker.sh
 ```
 
 ## 3) Остановка

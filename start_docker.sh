@@ -6,6 +6,16 @@ set -euo pipefail
 # Для GPU-режима выставьте перед запуском:
 #   VISION_FORCE_CPU=0 AUDIO_FORCE_CPU=0 AUDIO_USE_CUDA=1 ./start_docker.sh
 
+# Загружаем сохранённые runtime-настройки (если есть),
+# чтобы клиент мог централизованно менять режим запуска.
+RUNTIME_ENV_FILE="${RUNTIME_ENV_FILE:-.server_runtime.env}"
+if [ -f "$RUNTIME_ENV_FILE" ]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "$RUNTIME_ENV_FILE"
+  set +a
+fi
+
 # Перед запуском проверяем, что Docker видит compose-плагин.
 docker compose version >/dev/null
 

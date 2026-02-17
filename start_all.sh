@@ -9,6 +9,16 @@ set -euo pipefail
 #   3) сохранить предсказуемый и диагностируемый запуск.
 # ------------------------------------------------------------
 
+# Загружаем сохранённые runtime-настройки (если есть),
+# чтобы клиент мог централизованно менять режим запуска.
+RUNTIME_ENV_FILE="${RUNTIME_ENV_FILE:-.server_runtime.env}"
+if [ -f "$RUNTIME_ENV_FILE" ]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "$RUNTIME_ENV_FILE"
+  set +a
+fi
+
 # Останавливаем старые процессы, если они остались.
 "${PKILL_BIN:-pkill}" -f gateway-service >/dev/null 2>&1 || true
 "${PKILL_BIN:-pkill}" -f vision-worker >/dev/null 2>&1 || true
@@ -18,8 +28,8 @@ sleep 1
 # --------------------------
 # Настройки Vision (GPU-first)
 # --------------------------
-# По умолчанию vision НЕ принудительно на CPU.
-export VISION_FORCE_CPU="${VISION_FORCE_CPU:-0}"
+# По умолчанию стартуем безопасно на CPU.
+export VISION_FORCE_CPU="${VISION_FORCE_CPU:-1}"
 # Идентификатор GPU.
 # Если оставить пустым, vision-worker сам попробует несколько device_id (0..3)
 # и выберет рабочий (полезно для гибридной графики).
@@ -35,7 +45,7 @@ export VISION_CUDA_MEM_LIMIT_MB="${VISION_CUDA_MEM_LIMIT_MB:-1536}"
 # которую лучше отдать vision-моделям.
 # При желании можно включить GPU явно: AUDIO_USE_CUDA=1
 export AUDIO_USE_CUDA="${AUDIO_USE_CUDA:-0}"
-export AUDIO_FORCE_CPU="${AUDIO_FORCE_CPU:-0}"
+export AUDIO_FORCE_CPU="${AUDIO_FORCE_CPU:-1}"
 # Лимит VRAM для audio CUDA EP (если AUDIO_USE_CUDA=1).
 export AUDIO_CUDA_MEM_LIMIT_MB="${AUDIO_CUDA_MEM_LIMIT_MB:-256}"
 

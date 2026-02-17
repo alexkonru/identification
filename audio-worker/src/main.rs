@@ -46,9 +46,11 @@ fn build_cuda_audio_builder() -> Result<ort::session::builder::SessionBuilder> {
         .with_conv_max_workspace(false)
         .with_arena_extend_strategy(ort::execution_providers::ArenaExtendStrategy::SameAsRequested);
 
+    let intra_threads = env_usize("AUDIO_INTRA_THREADS").unwrap_or(2);
+
     Session::builder()?
         .with_optimization_level(GraphOptimizationLevel::Level3)?
-        .with_intra_threads(2)?
+        .with_intra_threads(intra_threads)?
         .with_execution_providers([cuda.build().error_on_failure()])
         .context("Failed to create AUDIO CUDA session builder")
 }
@@ -135,8 +137,13 @@ impl ModelStore {
 
         info!("Loading audio models from {}", models_dir);
 
-        let aasist_path = Path::new(models_dir).join("aasist.onnx");
-        let ecapa_path = Path::new(models_dir).join("voxceleb_ECAPA512_LM.onnx");
+        let aasist_name =
+            std::env::var("AUDIO_MODEL_AASIST").unwrap_or_else(|_| "aasist.onnx".to_string());
+        let ecapa_name = std::env::var("AUDIO_MODEL_ECAPA")
+            .unwrap_or_else(|_| "voxceleb_ECAPA512_LM.onnx".to_string());
+
+        let aasist_path = Path::new(models_dir).join(aasist_name);
+        let ecapa_path = Path::new(models_dir).join(ecapa_name);
 
         let load_with_builder =
             |builder: &ort::session::builder::SessionBuilder| -> Result<(Session, Session)> {
@@ -174,9 +181,10 @@ impl ModelStore {
             }
         }
 
+        let intra_threads = env_usize("AUDIO_INTRA_THREADS").unwrap_or(4);
         let builder_cpu = Session::builder()?
             .with_optimization_level(GraphOptimizationLevel::Level3)?
-            .with_intra_threads(4)?;
+            .with_intra_threads(intra_threads)?;
         let (aasist, ecapa) =
             load_with_builder(&builder_cpu).context("Failed to load audio models on CPU")?;
 

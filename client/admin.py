@@ -2,6 +2,7 @@ import os
 import subprocess
 import sys
 import time
+from pathlib import Path
 import cv2
 import grpc
 import PyQt6.QtCore as QtCore
@@ -231,6 +232,48 @@ class BiometryClient:
     def get_logs(self, limit=50, offset=0):
         return self.stub.GetLogs(biometry_pb2.GetLogsRequest(limit=limit, offset=offset)).logs
 
+    # --- Runtime config helpers ---
+    def _runtime_env_path(self):
+        return Path(__file__).resolve().parents[1] / ".server_runtime.env"
+
+    def list_available_models(self):
+        root = Path(__file__).resolve().parents[1]
+        vision_dir = root / "vision-worker" / "models"
+        audio_dir = root / "audio-worker" / "models"
+        return {
+            "vision": sorted([p.name for p in vision_dir.glob("*.onnx")]) if vision_dir.exists() else [],
+            "audio": sorted([p.name for p in audio_dir.glob("*.onnx")]) if audio_dir.exists() else [],
+        }
+
+    def save_runtime_settings(self, settings: dict):
+        env_path = self._runtime_env_path()
+        lines = [
+            "# Автосгенерировано клиентом admin.py",
+            "# Применяется скриптами start_all.sh / start_docker.sh",
+        ]
+        for k, v in settings.items():
+            lines.append(f"{k}={v}")
+        env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return env_path
+
+    def apply_runtime_settings_and_restart(self, settings: dict):
+        env_path = self.save_runtime_settings(settings)
+
+        # Если docker-compose проект поднят — перезапускаем docker-стек.
+        use_docker = False
+        try:
+            out = subprocess.check_output(["docker", "compose", "ps"], text=True, stderr=subprocess.STDOUT)
+            use_docker = "gateway-service" in out or "vision-worker" in out or "audio-worker" in out
+        except Exception:
+            use_docker = False
+
+        if use_docker:
+            subprocess.check_call(["bash", "-lc", "./stop_docker.sh && ./start_docker.sh"])
+        else:
+            subprocess.check_call(["bash", "-lc", "./stop_all.sh && ./start_all.sh"])
+
+        return env_path, ("docker" if use_docker else "local")
+
 # --- UI Components ---
 
 class SystemTab(QWidget):
@@ -287,6 +330,82 @@ class SystemTab(QWidget):
         hw_group.setLayout(hw_layout)
         layout.addWidget(hw_group, 1)
 
+        # Runtime-конфигурация запуска (CPU/GPU + модельные профили)
+        rt_group = QGroupBox("Runtime настройки (CPU/GPU + модели)")
+        rt_layout = QFormLayout()
+
+        self.cmb_runtime_mode = QComboBox()
+        self.cmb_runtime_mode.addItems([
+            "CPU (рекомендуется для Ryzen 5 3500U + MX230/Vega8)",
+            "GPU CUDA (при наличии совместимой NVIDIA)",
+        ])
+
+        self.cmb_vision_profile = QComboBox()
+        self.cmb_audio_profile = QComboBox()
+
+        self.cmb_model_yunet = QComboBox()
+        self.cmb_model_arcface = QComboBox()
+        self.cmb_model_liveness = QComboBox()
+        self.cmb_model_aasist = QComboBox()
+        self.cmb_model_ecapa = QComboBox()
+
+        models = self.client.list_available_models()
+        vis = ", ".join(models.get("vision", [])) or "модели не найдены"
+        aud = ", ".join(models.get("audio", [])) or "модели не найдены"
+        self.cmb_vision_profile.addItems([
+            f"default ({vis})",
+            "low_vram (уменьшенный лимит CUDA памяти)",
+        ])
+        self.cmb_audio_profile.addItems([
+            f"default ({aud})",
+            "cpu_only (рекомендуется для слабых GPU)",
+        ])
+
+        vision_models = models.get("vision", [])
+        audio_models = models.get("audio", [])
+
+        def _fill_combo(combo, items, fallback):
+            combo.clear()
+            if items:
+                combo.addItems(items)
+            else:
+                combo.addItem(fallback)
+
+        _fill_combo(self.cmb_model_yunet, [m for m in vision_models if "yunet" in m.lower()], "face_detection_yunet_2023mar.onnx")
+        if self.cmb_model_yunet.count() == 0:
+            self.cmb_model_yunet.addItem("face_detection_yunet_2023mar.onnx")
+
+        _fill_combo(self.cmb_model_arcface, [m for m in vision_models if "arcface" in m.lower()], "arcface.onnx")
+        if self.cmb_model_arcface.count() == 0:
+            self.cmb_model_arcface.addItem("arcface.onnx")
+
+        _fill_combo(self.cmb_model_liveness, [m for m in vision_models if "mini" in m.lower() or "fas" in m.lower()], "MiniFASNetV2.onnx")
+        if self.cmb_model_liveness.count() == 0:
+            self.cmb_model_liveness.addItem("MiniFASNetV2.onnx")
+
+        _fill_combo(self.cmb_model_aasist, [m for m in audio_models if "aasist" in m.lower()], "aasist.onnx")
+        if self.cmb_model_aasist.count() == 0:
+            self.cmb_model_aasist.addItem("aasist.onnx")
+
+        _fill_combo(self.cmb_model_ecapa, [m for m in audio_models if "ecapa" in m.lower() or "voxceleb" in m.lower()], "voxceleb_ECAPA512_LM.onnx")
+        if self.cmb_model_ecapa.count() == 0:
+            self.cmb_model_ecapa.addItem("voxceleb_ECAPA512_LM.onnx")
+
+        btn_apply_runtime = QPushButton("💾 Применить и перезапустить сервер")
+        btn_apply_runtime.clicked.connect(self.apply_runtime_settings)
+
+        rt_layout.addRow("Режим выполнения:", self.cmb_runtime_mode)
+        rt_layout.addRow("Vision профиль:", self.cmb_vision_profile)
+        rt_layout.addRow("Vision модель (детекция):", self.cmb_model_yunet)
+        rt_layout.addRow("Vision модель (идентификация):", self.cmb_model_arcface)
+        rt_layout.addRow("Vision модель (liveness):", self.cmb_model_liveness)
+        rt_layout.addRow("Audio профиль:", self.cmb_audio_profile)
+        rt_layout.addRow("Audio модель (liveness/spoof):", self.cmb_model_aasist)
+        rt_layout.addRow("Audio модель (идентификация):", self.cmb_model_ecapa)
+        rt_layout.addRow(btn_apply_runtime)
+        rt_group.setLayout(rt_layout)
+        layout.addWidget(rt_group, 1)
+
     def refresh_status(self):
         try:
             status = self.client.get_system_status()
@@ -313,6 +432,38 @@ class SystemTab(QWidget):
             devs = self.client.scan_hardware()
             for d in devs: self.hw_list.addItem(f"Found: {d.name} ({d.device_type}) at {d.connection_string}")
         except Exception as e: QMessageBox.critical(self, "Ошибка", str(e))
+
+    def apply_runtime_settings(self):
+        try:
+            use_gpu = self.cmb_runtime_mode.currentIndex() == 1
+            vision_low_vram = self.cmb_vision_profile.currentIndex() == 1
+            audio_cpu_only = self.cmb_audio_profile.currentIndex() == 1
+
+            settings = {
+                "VISION_FORCE_CPU": "0" if use_gpu else "1",
+                "AUDIO_FORCE_CPU": "1" if (not use_gpu or audio_cpu_only) else "0",
+                "AUDIO_USE_CUDA": "0" if (not use_gpu or audio_cpu_only) else "1",
+                "VISION_CUDA_MEM_LIMIT_MB": "768" if vision_low_vram else "1024",
+                "AUDIO_CUDA_MEM_LIMIT_MB": "128" if vision_low_vram else "256",
+                "VISION_INTRA_THREADS": "4",
+                "AUDIO_INTRA_THREADS": "2",
+                "VISION_MODEL_YUNET": self.cmb_model_yunet.currentText(),
+                "VISION_MODEL_ARCFACE": self.cmb_model_arcface.currentText(),
+                "VISION_MODEL_LIVENESS": self.cmb_model_liveness.currentText(),
+                "AUDIO_MODEL_AASIST": self.cmb_model_aasist.currentText(),
+                "AUDIO_MODEL_ECAPA": self.cmb_model_ecapa.currentText(),
+            }
+
+            env_path, mode = self.client.apply_runtime_settings_and_restart(settings)
+            QMessageBox.information(
+                self,
+                "Runtime обновлён",
+                f"Настройки сохранены в:\n{env_path}\n\n"
+                f"Режим перезапуска: {mode}\n"
+                "Сервисы будут работать с новыми параметрами запуска.",
+            )
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка применения runtime", str(e))
 
 class PersonnelTab(QWidget):
     def __init__(self, client):

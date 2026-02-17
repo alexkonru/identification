@@ -86,9 +86,11 @@ fn build_cuda_builder(device_id: i32) -> Result<SessionBuilder> {
         .with_conv_max_workspace(false)
         .with_arena_extend_strategy(ort::execution_providers::ArenaExtendStrategy::SameAsRequested);
 
+    let intra_threads = env_usize("VISION_INTRA_THREADS").unwrap_or(4);
+
     Session::builder()?
         .with_optimization_level(GraphOptimizationLevel::Level3)?
-        .with_intra_threads(4)?
+        .with_intra_threads(intra_threads)?
         .with_execution_providers([cuda.build().error_on_failure()])?
         .with_log_level(ort::logging::LogLevel::Warning)
         .context("Failed to create session builder with CUDA execution provider")
@@ -242,9 +244,16 @@ struct ModelStore {
 
 impl ModelStore {
     fn new(models_dir: &str) -> Result<Self> {
-        let arcface_path = Path::new(models_dir).join("arcface.onnx");
-        let liveness_path = Path::new(models_dir).join("MiniFASNetV2.onnx");
-        let yunet_path = Path::new(models_dir).join("face_detection_yunet_2023mar.onnx");
+        let arcface_name = std::env::var("VISION_MODEL_ARCFACE")
+            .unwrap_or_else(|_| "arcface.onnx".to_string());
+        let liveness_name = std::env::var("VISION_MODEL_LIVENESS")
+            .unwrap_or_else(|_| "MiniFASNetV2.onnx".to_string());
+        let yunet_name = std::env::var("VISION_MODEL_YUNET")
+            .unwrap_or_else(|_| "face_detection_yunet_2023mar.onnx".to_string());
+
+        let arcface_path = Path::new(models_dir).join(arcface_name);
+        let liveness_path = Path::new(models_dir).join(liveness_name);
+        let yunet_path = Path::new(models_dir).join(yunet_name);
 
         let force_cpu = std::env::var("VISION_FORCE_CPU")
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
@@ -367,9 +376,10 @@ impl ModelStore {
         arc_path: &Path,
         live_path: &Path,
     ) -> Result<(Session, Session, Session, String)> {
+        let intra_threads = env_usize("VISION_INTRA_THREADS").unwrap_or(4);
         let builder_cpu = Session::builder()?
             .with_optimization_level(GraphOptimizationLevel::Level3)?
-            .with_intra_threads(4)?;
+            .with_intra_threads(intra_threads)?;
 
         let sessions = Self::try_load(&builder_cpu, yunet_path, arc_path, live_path)
             .context("Не удалось загрузить модели даже на CPU")?;
@@ -382,9 +392,16 @@ impl ModelStore {
             return Ok(());
         }
 
-        let yunet_path = Path::new(&self.models_dir).join("face_detection_yunet_2023mar.onnx");
-        let arcface_path = Path::new(&self.models_dir).join("arcface.onnx");
-        let liveness_path = Path::new(&self.models_dir).join("MiniFASNetV2.onnx");
+        let arcface_name = std::env::var("VISION_MODEL_ARCFACE")
+            .unwrap_or_else(|_| "arcface.onnx".to_string());
+        let liveness_name = std::env::var("VISION_MODEL_LIVENESS")
+            .unwrap_or_else(|_| "MiniFASNetV2.onnx".to_string());
+        let yunet_name = std::env::var("VISION_MODEL_YUNET")
+            .unwrap_or_else(|_| "face_detection_yunet_2023mar.onnx".to_string());
+
+        let yunet_path = Path::new(&self.models_dir).join(yunet_name);
+        let arcface_path = Path::new(&self.models_dir).join(arcface_name);
+        let liveness_path = Path::new(&self.models_dir).join(liveness_name);
 
         let (y, a, l, _) = Self::load_cpu(&yunet_path, &arcface_path, &liveness_path)?;
         *self
