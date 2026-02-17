@@ -1,5 +1,5 @@
-.git
-target
+.git/
+target/
 logs
 client/.venv
 **/__pycache__

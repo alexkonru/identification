@@ -1,3 +1,5 @@
+version: '3.8'
+
 services:
   db:
     image: pgvector/pgvector:pg16
@@ -18,6 +20,7 @@ services:
       retries: 20
 
   vision-worker:
+    build: .
     image: identification-rust-base:latest
     container_name: vision-worker
     working_dir: /workspace/identification
@@ -28,20 +31,26 @@ services:
       - .:/workspace/identification
       - cargo-registry:/usr/local/cargo/registry
       - cargo-git:/usr/local/cargo/git
-      - target-cache:/workspace/identification/target
+      # КРИТИЧНО: изолируем target, чтобы не было конфликта glibc 
+      - target-cache-vision:/workspace/identification/target
     environment:
       RUST_LOG: "${RUST_LOG:-vision_worker=info,ort::logging=warn}"
       VISION_FORCE_CPU: "${VISION_FORCE_CPU:-0}"
-      VISION_CUDA_DEVICE_ID: "${VISION_CUDA_DEVICE_ID:-}"
       VISION_CUDA_MEM_LIMIT_MB: "${VISION_CUDA_MEM_LIMIT_MB:-1536}"
-      NVIDIA_VISIBLE_DEVICES: "${NVIDIA_VISIBLE_DEVICES:-all}"
-      NVIDIA_DRIVER_CAPABILITIES: "${NVIDIA_DRIVER_CAPABILITIES:-compute,utility}"
-    gpus: all
+      NVIDIA_VISIBLE_DEVICES: all
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
     depends_on:
       db:
         condition: service_healthy
 
   audio-worker:
+    build: .
     image: identification-rust-base:latest
     container_name: audio-worker
     working_dir: /workspace/identification
@@ -52,20 +61,25 @@ services:
       - .:/workspace/identification
       - cargo-registry:/usr/local/cargo/registry
       - cargo-git:/usr/local/cargo/git
-      - target-cache:/workspace/identification/target
+      - target-cache-audio:/workspace/identification/target
     environment:
       RUST_LOG: "${RUST_LOG:-audio_worker=info,ort::logging=warn}"
-      AUDIO_USE_CUDA: "${AUDIO_USE_CUDA:-0}"
-      AUDIO_FORCE_CPU: "${AUDIO_FORCE_CPU:-0}"
+      AUDIO_USE_CUDA: "${AUDIO_USE_CUDA:-1}"
       AUDIO_CUDA_MEM_LIMIT_MB: "${AUDIO_CUDA_MEM_LIMIT_MB:-256}"
-      NVIDIA_VISIBLE_DEVICES: "${NVIDIA_VISIBLE_DEVICES:-all}"
-      NVIDIA_DRIVER_CAPABILITIES: "${NVIDIA_DRIVER_CAPABILITIES:-compute,utility}"
-    gpus: all
+      NVIDIA_VISIBLE_DEVICES: all
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
     depends_on:
       db:
         condition: service_healthy
 
   gateway-service:
+    build: .
     image: identification-rust-base:latest
     container_name: gateway-service
     working_dir: /workspace/identification
@@ -75,16 +89,11 @@ services:
     volumes:
       - .:/workspace/identification
       - cargo-registry:/usr/local/cargo/registry
-      - cargo-git:/usr/local/cargo/git
-      - target-cache:/workspace/identification/target
+      - target-cache-gateway:/workspace/identification/target
     environment:
-      RUST_LOG: "${RUST_LOG:-gateway_service=info}"
       DATABASE_URL: "postgres://user:password@db:5432/biometry_db"
       AUDIO_URL: "http://audio-worker:50053"
       VISION_URL: "http://vision-worker:50052"
-      FACE_SIMILARITY_THRESHOLD: "${FACE_SIMILARITY_THRESHOLD:-0.6}"
-      VOICE_SIMILARITY_THRESHOLD: "${VOICE_SIMILARITY_THRESHOLD:-0.6}"
-      TEST_DEVICE_ID: "${TEST_DEVICE_ID:-9999}"
     depends_on:
       db:
         condition: service_healthy
@@ -97,4 +106,7 @@ volumes:
   db-data:
   cargo-registry:
   cargo-git:
-  target-cache:
+  # Раздельные volume для каждого сервиса ускоряют параллельную сборку
+  target-cache-vision:
+  target-cache-audio:
+  target-cache-gateway:
