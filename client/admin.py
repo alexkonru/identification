@@ -5,6 +5,7 @@ import time
 from pathlib import Path
 import cv2
 import grpc
+import numpy as np
 import PyQt6.QtCore as QtCore
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -287,6 +288,14 @@ class SystemTab(QWidget):
 
     def init_ui(self):
         layout = QVBoxLayout(self)
+
+        conn_group = QGroupBox("Подключение к серверу")
+        conn_layout = QFormLayout()
+        conn_layout.addRow("Адрес gRPC Gateway:", QLabel(self.client.address))
+        conn_layout.addRow("Пояснение:", QLabel("Клиент подключается к gateway-service по gRPC и получает статусы сервисов."))
+        conn_group.setLayout(conn_layout)
+        layout.addWidget(conn_group, 0)
+
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         content = QWidget()
@@ -308,18 +317,6 @@ class SystemTab(QWidget):
         scroll.setWidget(content)
         layout.addWidget(scroll, 2)
 
-        svc_group = QGroupBox("Управление службами")
-        svc_layout = QFormLayout()
-        for name in ["vision-worker", "audio-worker"]:
-            hbox = QHBoxLayout()
-            btn_start = QPushButton("Start"); btn_start.clicked.connect(lambda _, n=name: self.control_service(n, "start"))
-            btn_stop = QPushButton("Stop"); btn_stop.clicked.connect(lambda _, n=name: self.control_service(n, "stop"))
-            btn_restart = QPushButton("Restart"); btn_restart.clicked.connect(lambda _, n=name: self.control_service(n, "restart"))
-            hbox.addWidget(btn_start); hbox.addWidget(btn_stop); hbox.addWidget(btn_restart)
-            svc_layout.addRow(name, hbox)
-        svc_group.setLayout(svc_layout)
-        layout.addWidget(svc_group, 1)
-
         hw_group = QGroupBox("Управление оборудованием")
         hw_layout = QVBoxLayout()
         self.btn_scan = QPushButton("🔍 Сканировать сеть")
@@ -330,78 +327,21 @@ class SystemTab(QWidget):
         hw_group.setLayout(hw_layout)
         layout.addWidget(hw_group, 1)
 
-        # Runtime-конфигурация запуска (CPU/GPU + модельные профили)
-        rt_group = QGroupBox("Runtime настройки (CPU/GPU + модели)")
+        # Runtime-конфигурация запуска (CPU/GPU режимы)
+        rt_group = QGroupBox("Runtime настройки (CPU/GPU)")
         rt_layout = QFormLayout()
 
         self.cmb_runtime_mode = QComboBox()
         self.cmb_runtime_mode.addItems([
-            "CPU (рекомендуется для Ryzen 5 3500U + MX230/Vega8)",
-            "GPU CUDA (при наличии совместимой NVIDIA)",
+            "CPU - ЭКО (минимальная нагрузка)",
+            "CPU - Баланс (рекомендуется)",
+            "GPU CUDA (если совместимо)",
         ])
-
-        self.cmb_vision_profile = QComboBox()
-        self.cmb_audio_profile = QComboBox()
-
-        self.cmb_model_yunet = QComboBox()
-        self.cmb_model_arcface = QComboBox()
-        self.cmb_model_liveness = QComboBox()
-        self.cmb_model_aasist = QComboBox()
-        self.cmb_model_ecapa = QComboBox()
-
-        models = self.client.list_available_models()
-        vis = ", ".join(models.get("vision", [])) or "модели не найдены"
-        aud = ", ".join(models.get("audio", [])) or "модели не найдены"
-        self.cmb_vision_profile.addItems([
-            f"default ({vis})",
-            "low_vram (уменьшенный лимит CUDA памяти)",
-        ])
-        self.cmb_audio_profile.addItems([
-            f"default ({aud})",
-            "cpu_only (рекомендуется для слабых GPU)",
-        ])
-
-        vision_models = models.get("vision", [])
-        audio_models = models.get("audio", [])
-
-        def _fill_combo(combo, items, fallback):
-            combo.clear()
-            if items:
-                combo.addItems(items)
-            else:
-                combo.addItem(fallback)
-
-        _fill_combo(self.cmb_model_yunet, [m for m in vision_models if "yunet" in m.lower()], "face_detection_yunet_2023mar.onnx")
-        if self.cmb_model_yunet.count() == 0:
-            self.cmb_model_yunet.addItem("face_detection_yunet_2023mar.onnx")
-
-        _fill_combo(self.cmb_model_arcface, [m for m in vision_models if "arcface" in m.lower()], "arcface.onnx")
-        if self.cmb_model_arcface.count() == 0:
-            self.cmb_model_arcface.addItem("arcface.onnx")
-
-        _fill_combo(self.cmb_model_liveness, [m for m in vision_models if "mini" in m.lower() or "fas" in m.lower()], "MiniFASNetV2.onnx")
-        if self.cmb_model_liveness.count() == 0:
-            self.cmb_model_liveness.addItem("MiniFASNetV2.onnx")
-
-        _fill_combo(self.cmb_model_aasist, [m for m in audio_models if "aasist" in m.lower()], "aasist.onnx")
-        if self.cmb_model_aasist.count() == 0:
-            self.cmb_model_aasist.addItem("aasist.onnx")
-
-        _fill_combo(self.cmb_model_ecapa, [m for m in audio_models if "ecapa" in m.lower() or "voxceleb" in m.lower()], "voxceleb_ECAPA512_LM.onnx")
-        if self.cmb_model_ecapa.count() == 0:
-            self.cmb_model_ecapa.addItem("voxceleb_ECAPA512_LM.onnx")
 
         btn_apply_runtime = QPushButton("💾 Применить и перезапустить сервер")
         btn_apply_runtime.clicked.connect(self.apply_runtime_settings)
 
         rt_layout.addRow("Режим выполнения:", self.cmb_runtime_mode)
-        rt_layout.addRow("Vision профиль:", self.cmb_vision_profile)
-        rt_layout.addRow("Vision модель (детекция):", self.cmb_model_yunet)
-        rt_layout.addRow("Vision модель (идентификация):", self.cmb_model_arcface)
-        rt_layout.addRow("Vision модель (liveness):", self.cmb_model_liveness)
-        rt_layout.addRow("Audio профиль:", self.cmb_audio_profile)
-        rt_layout.addRow("Audio модель (liveness/spoof):", self.cmb_model_aasist)
-        rt_layout.addRow("Audio модель (идентификация):", self.cmb_model_ecapa)
         rt_layout.addRow(btn_apply_runtime)
         rt_group.setLayout(rt_layout)
         layout.addWidget(rt_group, 1)
@@ -435,23 +375,27 @@ class SystemTab(QWidget):
 
     def apply_runtime_settings(self):
         try:
-            use_gpu = self.cmb_runtime_mode.currentIndex() == 1
-            vision_low_vram = self.cmb_vision_profile.currentIndex() == 1
-            audio_cpu_only = self.cmb_audio_profile.currentIndex() == 1
+            mode_idx = self.cmb_runtime_mode.currentIndex()
+            use_gpu = mode_idx == 2
+
+            if mode_idx == 0:  # cpu eco
+                vision_threads = "2"
+                audio_threads = "1"
+            elif mode_idx == 1:  # cpu balance
+                vision_threads = "4"
+                audio_threads = "2"
+            else:  # gpu
+                vision_threads = "4"
+                audio_threads = "2"
 
             settings = {
                 "VISION_FORCE_CPU": "0" if use_gpu else "1",
-                "AUDIO_FORCE_CPU": "1" if (not use_gpu or audio_cpu_only) else "0",
-                "AUDIO_USE_CUDA": "0" if (not use_gpu or audio_cpu_only) else "1",
-                "VISION_CUDA_MEM_LIMIT_MB": "768" if vision_low_vram else "1024",
-                "AUDIO_CUDA_MEM_LIMIT_MB": "128" if vision_low_vram else "256",
-                "VISION_INTRA_THREADS": "4",
-                "AUDIO_INTRA_THREADS": "2",
-                "VISION_MODEL_YUNET": self.cmb_model_yunet.currentText(),
-                "VISION_MODEL_ARCFACE": self.cmb_model_arcface.currentText(),
-                "VISION_MODEL_LIVENESS": self.cmb_model_liveness.currentText(),
-                "AUDIO_MODEL_AASIST": self.cmb_model_aasist.currentText(),
-                "AUDIO_MODEL_ECAPA": self.cmb_model_ecapa.currentText(),
+                "AUDIO_FORCE_CPU": "0" if use_gpu else "1",
+                "AUDIO_USE_CUDA": "1" if use_gpu else "0",
+                "VISION_CUDA_MEM_LIMIT_MB": "1024",
+                "AUDIO_CUDA_MEM_LIMIT_MB": "256",
+                "VISION_INTRA_THREADS": vision_threads,
+                "AUDIO_INTRA_THREADS": audio_threads,
             }
 
             env_path, mode = self.client.apply_runtime_settings_and_restart(settings)
@@ -720,6 +664,13 @@ class MonitoringTab(QWidget):
         self.log_timer = QTimer()
         self.log_timer.timeout.connect(self.process_active_mode)
         self.mic_stream = MicrophoneStream(sample_rate=16000, channels=1)
+        self.face_detector = cv2.CascadeClassifier(
+            cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+        )
+        self.last_presence_ts = 0.0
+        self.last_pipeline_ts = 0.0
+        self.last_live_ok_ts = 0.0
+        self.last_presence_state = False
         self.setup_ui()
 
     def setup_ui(self):
@@ -754,18 +705,48 @@ class MonitoringTab(QWidget):
         self.pipeline_log = QTextEdit()
         self.pipeline_log.setReadOnly(True)
         self.pipeline_log.setMinimumWidth(420)
-        self.pipeline_log.setPlaceholderText("Здесь отображается полный пайплайн: liveness -> face -> voice -> policy -> decision")
+        self.pipeline_log.setPlaceholderText("Пайплайн: детекция присутствия -> liveness -> идентификация -> policy -> decision")
         layout.addWidget(self.pipeline_log, 2)
 
         self.refresh_tree()
-        self.log_timer.start(1200)  # always-on identification
+        self.log_timer.start(250)  # быстрый цикл детекции присутствия
 
     def capture_audio_raw(self, duration_s=1, sample_rate=16000):
         chunk = self.mic_stream.read_chunk(duration_s=duration_s)
         if chunk is None:
-            self.pipeline_log.append("[AUDIO] capture failed: microphone stream unavailable")
+            self.append_pipeline_log("[AUDIO] capture failed: microphone stream unavailable")
             return None
         return chunk
+
+    def append_pipeline_log(self, text: str):
+        self.pipeline_log.append(text)
+        doc = self.pipeline_log.document()
+        while doc.blockCount() > 250:
+            cursor = self.pipeline_log.textCursor()
+            cursor.movePosition(cursor.MoveOperation.Start)
+            cursor.select(cursor.SelectionType.LineUnderCursor)
+            cursor.removeSelectedText()
+            cursor.deleteChar()
+
+    def detect_person_in_frame(self, frame_bytes):
+        if not frame_bytes:
+            return False
+        arr = np.frombuffer(frame_bytes, dtype=np.uint8)
+        img = cv2.imdecode(arr, cv2.IMREAD_GRAYSCALE)
+        if img is None:
+            return False
+        faces = self.face_detector.detectMultiScale(img, scaleFactor=1.1, minNeighbors=4, minSize=(48, 48))
+        return len(faces) > 0
+
+    def detect_voice_presence(self):
+        raw = self.capture_audio_raw(duration_s=0.2, sample_rate=16000)
+        if not raw:
+            return False, None
+        pcm = np.frombuffer(raw, dtype=np.int16).astype(np.float32)
+        if pcm.size == 0:
+            return False, None
+        rms = float(np.sqrt(np.mean((pcm / 32768.0) ** 2)))
+        return rms > 0.008, raw
 
     def refresh_tree(self):
         self.tree.clear()
@@ -792,7 +773,7 @@ class MonitoringTab(QWidget):
                 self.tree.addTopLevelItem(z)
                 z.setExpanded(True)
         except Exception as e:
-            self.pipeline_log.append(f"[UI] refresh error: {e}")
+            self.append_pipeline_log(f"[UI] refresh error: {e}")
 
     def on_select(self, current, _prev=None):
         self.stop_all_videos()
@@ -808,7 +789,7 @@ class MonitoringTab(QWidget):
         self.selected_device_id = dev.id
         t = VideoThread(dev.connection_string, dev.id)
         t.frame_ready.connect(self._show_frame)
-        t.status_msg.connect(lambda msg: self.pipeline_log.append(f"[CAMERA] {msg}"))
+        t.status_msg.connect(lambda msg: self.append_pipeline_log(f"[CAMERA] {msg}"))
         t.start()
         self.active_cameras[dev.id] = t
 
@@ -835,34 +816,63 @@ class MonitoringTab(QWidget):
             self.on_select(item)
 
     def process_active_mode(self):
-        # Always active: always use mic + camera for pipeline
+        # Always active pipeline with cheap presence detection first:
+        # 1) person/voice presence, 2) liveness, 3) identification.
         if not self.active_cameras:
             return
 
-        audio_bytes = self.capture_audio_raw(duration_s=1, sample_rate=16000)
+        now = time.time()
+        voice_present, audio_probe = self.detect_voice_presence()
 
         for dev_id, t in self.active_cameras.items():
             frame = t.get_frame_bytes()
             if not frame:
                 continue
+
+            person_present = self.detect_person_in_frame(frame)
+            present = person_present or voice_present
+
+            if present:
+                self.last_presence_ts = now
+                if not self.last_presence_state:
+                    self.append_pipeline_log("[PRESENCE] Обнаружено присутствие (лицо/голос).")
+            else:
+                if self.last_presence_state and (now - self.last_presence_ts) > 1.5:
+                    self.append_pipeline_log("[PRESENCE] Нет человека у входа — heavy pipeline приостановлен.")
+                self.last_presence_state = False
+                continue
+
+            self.last_presence_state = True
+
+            interval = 0.9 if (now - self.last_live_ok_ts) < 3.0 else 1.5
+            if (now - self.last_pipeline_ts) < interval:
+                continue
+
+            self.last_pipeline_ts = now
+
+            # Если голос уже найден на шаге presence, используем его, иначе добираем небольшой фрагмент.
+            audio_bytes = audio_probe if voice_present else self.capture_audio_raw(duration_s=0.25, sample_rate=16000)
+
             try:
                 result = self.client.run_identification_pipeline(dev_id, frame, audio_bytes=audio_bytes)
                 msg = f"{result['user_name']}: {'OK' if result['granted'] else 'NO'}\n{result['message']}"
                 color = (0, 255, 0) if result['granted'] else (0, 0, 255)
                 t.set_overlay(msg, color)
 
-                self.pipeline_log.clear()
-                self.pipeline_log.append(f"Device ID: {dev_id}")
-                self.pipeline_log.append("=" * 50)
+                if result.get("face_score", 0.0) >= 0.5:
+                    self.last_live_ok_ts = now
+
+                self.append_pipeline_log(f"Device ID: {dev_id}")
+                self.append_pipeline_log("=" * 50)
                 for line in result["details"]:
-                    self.pipeline_log.append(line)
-                self.pipeline_log.append("=" * 50)
-                self.pipeline_log.append(
+                    self.append_pipeline_log(line)
+                self.append_pipeline_log("=" * 50)
+                self.append_pipeline_log(
                     f"RESULT: {'GRANTED' if result['granted'] else 'DENIED'} | STAGE={result['stage']} | "
                     f"VISION_OK={result['vision_ok']} | AUDIO_OK={result['audio_ok']} | CONF={result['final_confidence']:.3f}"
                 )
             except Exception as e:
-                self.pipeline_log.append(f"[PIPELINE] ERROR: {e}")
+                self.append_pipeline_log(f"[PIPELINE] ERROR: {e}")
 
     def closeEvent(self, event):
         self.stop_all_videos()
@@ -970,9 +980,13 @@ class AdminApp(QMainWindow):
     def __init__(self, client):
         super().__init__(); self.setWindowTitle("Biometry Admin Panel 2.0"); self.resize(1200, 800); self.client = client
         self.tabs = QTabWidget(); self.personnel_tab = PersonnelTab(self.client); self.monitor_tab = MonitoringTab(self.client)
-        self.tabs.addTab(SystemTab(self.client), "⚙️ Система"); self.tabs.addTab(self.personnel_tab, "👥 Персонал")
-        self.tabs.addTab(InfrastructureTab(self.client), "🏗 Инфраструктура"); self.tabs.addTab(AccessTab(self.client), "🔐 Доступ")
-        self.tabs.addTab(self.monitor_tab, "📹 Мониторинг"); self.tabs.addTab(LogTab(self.client), "📜 Журнал"); self.tabs.addTab(HelpTab(), "❓ Справка")
+        self.tabs.addTab(self.monitor_tab, "📹 Мониторинг")
+        self.tabs.addTab(SystemTab(self.client), "⚙️ Система")
+        self.tabs.addTab(self.personnel_tab, "👥 Персонал")
+        self.tabs.addTab(InfrastructureTab(self.client), "🏗 Инфраструктура")
+        self.tabs.addTab(AccessTab(self.client), "🔐 Доступ")
+        self.tabs.addTab(LogTab(self.client), "📜 Журнал")
+        self.tabs.addTab(HelpTab(), "❓ Справка")
         self.tabs.currentChanged.connect(self.on_tab_change); self.setCentralWidget(self.tabs)
     def on_tab_change(self, index):
         if self.tabs.widget(index) == self.personnel_tab: self.personnel_tab.start_camera()
