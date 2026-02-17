@@ -69,3 +69,17 @@ python client/admin.py
 ```
 
 По умолчанию клиент уже использует `127.0.0.1:50051`.
+
+## 5) CPU-пресеты (ЭКО / Баланс)
+
+Если запускаешь без GPU, удобно переключать только количество потоков:
+
+- **CPU ЭКО**: `VISION_INTRA_THREADS=2`, `AUDIO_INTRA_THREADS=1`
+- **CPU Баланс**: `VISION_INTRA_THREADS=4`, `AUDIO_INTRA_THREADS=2`
+
+Пример ЭКО-старта:
+
+```bash
+VISION_FORCE_CPU=1 AUDIO_FORCE_CPU=1 AUDIO_USE_CUDA=0 \
+VISION_INTRA_THREADS=2 AUDIO_INTRA_THREADS=1 ./start_docker.sh
+```
