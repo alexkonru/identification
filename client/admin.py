@@ -2,7 +2,6 @@ import os
 import subprocess
 import sys
 import time
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import cv2
 import grpc
@@ -292,19 +291,31 @@ class SystemTab(QWidget):
 
         status_group = QGroupBox("Статус сервисов")
         grid = QGridLayout()
+        grid.setContentsMargins(8, 8, 8, 8)
+        grid.setHorizontalSpacing(14)
+        grid.setVerticalSpacing(8)
         self.status_widgets = {}
         labels = [
             ("gateway", "Шлюз"),
-            ("database", "База данных"),
-            ("vision", "Распознавание лица"),
-            ("audio", "Распознавание голоса"),
+            ("database", "БД"),
+            ("vision", "Лицо"),
+            ("audio", "Голос"),
         ]
-        for i, (key, title) in enumerate(labels):
-            title_lbl = QLabel(f"<b>{title}</b>")
-            status_lbl = QLabel("⏳ Проверка")
-            device_lbl = QLabel("Устройство: -")
+        hdr1 = QLabel("<b>Сервис</b>")
+        hdr2 = QLabel("<b>Статус</b>")
+        hdr3 = QLabel("<b>Устройство</b>")
+        hdr4 = QLabel("<b>Сообщение</b>")
+        grid.addWidget(hdr1, 0, 0)
+        grid.addWidget(hdr2, 0, 1)
+        grid.addWidget(hdr3, 0, 2)
+        grid.addWidget(hdr4, 0, 3)
+        for i, (key, title) in enumerate(labels, start=1):
+            title_lbl = QLabel(title)
+            status_lbl = QLabel("⏳")
+            device_lbl = QLabel("-")
             msg_lbl = QLabel("-")
-            msg_lbl.setWordWrap(True)
+            msg_lbl.setWordWrap(False)
+            msg_lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
             grid.addWidget(title_lbl, i, 0)
             grid.addWidget(status_lbl, i, 1)
             grid.addWidget(device_lbl, i, 2)
@@ -348,7 +359,7 @@ class SystemTab(QWidget):
             def update(key, s_obj):
                 lbl_s, lbl_d, lbl_m = self.status_widgets[key]
                 lbl_s.setText("🟢 Онлайн" if s_obj.online else "🔴 Оффлайн")
-                lbl_d.setText(f"Устройство: {s_obj.device}")
+                lbl_d.setText(s_obj.device)
                 lbl_m.setText(s_obj.message)
                 if not s_obj.online: lbl_s.setStyleSheet("color: red; font-weight: bold")
                 else: lbl_s.setStyleSheet("color: #00ff00; font-weight: bold")
@@ -667,7 +678,6 @@ class MonitoringTab(QWidget):
         self.last_live_ok_ts = 0.0
         self.last_presence_state = False
         self.pipeline_inflight = False
-        self.pipeline_executor = ThreadPoolExecutor(max_workers=1)
         self.setup_ui()
 
     def setup_ui(self):
@@ -854,47 +864,39 @@ class MonitoringTab(QWidget):
             # Если голос уже найден на шаге presence, используем его, иначе добираем небольшой фрагмент.
             audio_bytes = audio_probe if voice_present else self.capture_audio_raw(duration_s=0.25, sample_rate=16000)
 
-            def _run_pipeline_and_update():
-                try:
-                    result = self.client.run_identification_pipeline(dev_id, frame, audio_bytes=audio_bytes)
-                except Exception as e:
-                    result = {"error": str(e)}
+            try:
+                result = self.client.run_identification_pipeline(dev_id, frame, audio_bytes=audio_bytes)
+            except Exception as e:
+                self.pipeline_inflight = False
+                self.append_pipeline_log(f"[ПАЙПЛАЙН] ошибка: {e}")
+                continue
 
-                def _apply():
-                    self.pipeline_inflight = False
-                    if "error" in result:
-                        self.append_pipeline_log(f"[ПАЙПЛАЙН] ошибка: {result['error']}")
-                        return
+            self.pipeline_inflight = False
 
-                    msg = f"{result['user_name']}: {'OK' if result['granted'] else 'NO'}\n{result['message']}"
-                    color = (0, 255, 0) if result['granted'] else (0, 0, 255)
-                    t.set_overlay(msg, color)
+            msg = f"{result['user_name']}: {'OK' if result['granted'] else 'NO'}\n{result['message']}"
+            color = (0, 255, 0) if result['granted'] else (0, 0, 255)
+            t.set_overlay(msg, color)
 
-                    if result.get("face_score", 0.0) >= 0.5:
-                        self.last_live_ok_ts = time.time()
+            if result.get("face_score", 0.0) >= 0.5:
+                self.last_live_ok_ts = time.time()
 
-                    stage_map = {
-                        "presence": "присутствие",
-                        "liveness": "проверка живости",
-                        "identification": "идентификация",
-                        "policy": "проверка прав",
-                        "decision": "решение",
-                        "gateway_error": "ошибка шлюза",
-                    }
-                    stage = stage_map.get(result.get("stage", "decision"), result.get("stage", "decision"))
-                    self.append_pipeline_log(
-                        f"[{dev_id}] {'ДОСТУП' if result['granted'] else 'ОТКАЗ'} | этап: {stage} | "
-                        f"уверенность: {result.get('final_confidence', 0.0):.2f} | пользователь: {result.get('user_name', '-') }"
-                    )
-
-                QtCore.QTimer.singleShot(0, _apply)
-
-            self.pipeline_executor.submit(_run_pipeline_and_update)
+            stage_map = {
+                "presence": "присутствие",
+                "liveness": "проверка живости",
+                "identification": "идентификация",
+                "policy": "проверка прав",
+                "decision": "решение",
+                "gateway_error": "ошибка шлюза",
+            }
+            stage = stage_map.get(result.get("stage", "decision"), result.get("stage", "decision"))
+            self.append_pipeline_log(
+                f"[{dev_id}] {'ДОСТУП' if result['granted'] else 'ОТКАЗ'} | этап: {stage} | "
+                f"уверенность: {result.get('final_confidence', 0.0):.2f} | пользователь: {result.get('user_name', '-') }"
+            )
 
     def closeEvent(self, event):
         self.stop_all_videos()
         self.mic_stream.stop()
-        self.pipeline_executor.shutdown(wait=False, cancel_futures=True)
         super().closeEvent(event)
 
 
