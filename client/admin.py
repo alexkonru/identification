@@ -2,6 +2,7 @@ import os
 import subprocess
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import cv2
 import grpc
@@ -289,33 +290,28 @@ class SystemTab(QWidget):
     def init_ui(self):
         layout = QVBoxLayout(self)
 
-        conn_group = QGroupBox("Подключение к серверу")
-        conn_layout = QFormLayout()
-        conn_layout.addRow("Адрес gRPC Gateway:", QLabel(self.client.address))
-        conn_layout.addRow("Пояснение:", QLabel("Клиент подключается к gateway-service по gRPC и получает статусы сервисов."))
-        conn_group.setLayout(conn_layout)
-        layout.addWidget(conn_group, 0)
-
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        content = QWidget()
-        self.status_layout = QVBoxLayout(content)
+        status_group = QGroupBox("Статус сервисов")
+        grid = QGridLayout()
         self.status_widgets = {}
-        for svc in ["Gateway", "Database", "Vision", "Audio"]:
-            g = QGroupBox(f"{svc} Service")
-            l = QFormLayout()
-            lbl_status = QLabel("Checking...")
-            lbl_device = QLabel("-")
-            lbl_msg = QLabel("-")
-            lbl_msg.setWordWrap(True)
-            l.addRow("Status:", lbl_status)
-            l.addRow("Device:", lbl_device)
-            l.addRow("Details:", lbl_msg)
-            g.setLayout(l)
-            self.status_layout.addWidget(g)
-            self.status_widgets[svc.lower()] = (lbl_status, lbl_device, lbl_msg)
-        scroll.setWidget(content)
-        layout.addWidget(scroll, 2)
+        labels = [
+            ("gateway", "Шлюз"),
+            ("database", "База данных"),
+            ("vision", "Распознавание лица"),
+            ("audio", "Распознавание голоса"),
+        ]
+        for i, (key, title) in enumerate(labels):
+            title_lbl = QLabel(f"<b>{title}</b>")
+            status_lbl = QLabel("⏳ Проверка")
+            device_lbl = QLabel("Устройство: -")
+            msg_lbl = QLabel("-")
+            msg_lbl.setWordWrap(True)
+            grid.addWidget(title_lbl, i, 0)
+            grid.addWidget(status_lbl, i, 1)
+            grid.addWidget(device_lbl, i, 2)
+            grid.addWidget(msg_lbl, i, 3)
+            self.status_widgets[key] = (status_lbl, device_lbl, msg_lbl)
+        status_group.setLayout(grid)
+        layout.addWidget(status_group, 2)
 
         hw_group = QGroupBox("Управление оборудованием")
         hw_layout = QVBoxLayout()
@@ -351,15 +347,15 @@ class SystemTab(QWidget):
             status = self.client.get_system_status()
             def update(key, s_obj):
                 lbl_s, lbl_d, lbl_m = self.status_widgets[key]
-                lbl_s.setText("🟢 ONLINE" if s_obj.online else "🔴 OFFLINE")
-                lbl_d.setText(f"🖥️ {s_obj.device}")
+                lbl_s.setText("🟢 Онлайн" if s_obj.online else "🔴 Оффлайн")
+                lbl_d.setText(f"Устройство: {s_obj.device}")
                 lbl_m.setText(s_obj.message)
                 if not s_obj.online: lbl_s.setStyleSheet("color: red; font-weight: bold")
                 else: lbl_s.setStyleSheet("color: #00ff00; font-weight: bold")
             update("gateway", status.gateway); update("database", status.database); update("vision", status.vision); update("audio", status.audio)
         except Exception as e:
             for k in self.status_widgets:
-                self.status_widgets[k][0].setText("🔴 CONNECT ERROR")
+                self.status_widgets[k][0].setText("🔴 Ошибка соединения")
                 self.status_widgets[k][2].setText(str(e))
 
     def control_service(self, name, action):
@@ -629,29 +625,28 @@ class HelpTab(QWidget):
             .code { font-family: monospace; background-color: #333; padding: 5px; border-radius: 4px; font-size: 14pt; }
         </style>
         <h1>📘 Справка по системе Biometry Admin</h1>
-        
+
         <h3>🔌 Быстрый старт</h3>
-        <p>1. Запустите серверную часть: <span class=\"code\">./start_all.sh</span></p>
-        <p>2. Убедитесь, что статусы на вкладке <b>"Система"</b> зеленые (ONLINE).</p>
+        <p>1. Запустите сервер: <span class="code">./start_all.sh</span> (или <span class="code">./start_docker.sh</span>).</p>
+        <p>2. На вкладке <b>"Система"</b> проверьте, что все сервисы <b>Онлайн</b>.</p>
 
-        <h3>🧠 Мониторинг и Идентификация</h3>
-        <p>Вкладка <b>"📹 Мониторинг"</b> позволяет видеть работу системы в реальном времени.</p>
-        <p><b>Режимы работы:</b></p>
+        <h3>📹 Мониторинг (основной сценарий)</h3>
         <ul>
-            <li><b>Пассивный режим (по умолчанию):</b> Клиент просто показывает видео. Распознавание выполняет отдельный <i>Hardware Controller</i> (если запущен). Результаты подтягиваются из журнала.</li>
-            <li><b>Активный режим (Live ID):</b> Включите галочку <b>"🚀 Live ID"</b>. Клиент будет сам отправлять кадры на сервер. Идеально для тестов без контроллера.</li>
+            <li><b>Шаг 1:</b> детекция присутствия (лицо/голос).</li>
+            <li><b>Шаг 2:</b> если присутствие есть — liveness.</li>
+            <li><b>Шаг 3:</b> если liveness пройден — идентификация и проверка доступа.</li>
         </ul>
-        <p><b>Расшифровка данных на экране:</b></p>
+        <p>Справа показывается короткий лог по этапам и итог (ДОСТУП/ОТКАЗ).</p>
+
+        <h3>⚙️ Режимы производительности</h3>
         <ul>
-            <li><b>Liveness:</b> Вероятность того, что лицо живое (не фото). Порог > 50%.</li>
-            <li><b>Distance:</b> Степень отличия лица от эталона. Чем меньше, тем лучше (Порог < 0.6).</li>
-            <li><b>Provider:</b> Где выполняются вычисления (CUDA - видеокарта, CPU - процессор).</li>
+            <li><b>CPU ЭКО:</b> минимальная нагрузка, максимум стабильности.</li>
+            <li><b>CPU Баланс:</b> рекомендуемый режим.</li>
+            <li><b>GPU CUDA:</b> только при совместимой NVIDIA + драйвере/runtime.</li>
         </ul>
 
-        <h3>🏗 Настройка</h3>
-        <p>1. Создайте <b>Зону</b> -> <b>Комнату</b> -> <b>Камеру</b>.</p>
-        <p>2. Для веб-камеры используйте Connection: <span class="code">0</span>.</p>
-        <p>3. Назначьте права сотрудникам на вкладке <b>"Доступ"</b>.</p>
+        <h3>🏗 Инфраструктура</h3>
+        <p>Последовательность настройки: <b>Зона → Комната → Камера</b>, затем права доступа на вкладке <b>"Доступ"</b>.</p>
         """)
         layout.addWidget(text)
 
@@ -671,6 +666,8 @@ class MonitoringTab(QWidget):
         self.last_pipeline_ts = 0.0
         self.last_live_ok_ts = 0.0
         self.last_presence_state = False
+        self.pipeline_inflight = False
+        self.pipeline_executor = ThreadPoolExecutor(max_workers=1)
         self.setup_ui()
 
     def setup_ui(self):
@@ -705,7 +702,7 @@ class MonitoringTab(QWidget):
         self.pipeline_log = QTextEdit()
         self.pipeline_log.setReadOnly(True)
         self.pipeline_log.setMinimumWidth(420)
-        self.pipeline_log.setPlaceholderText("Пайплайн: детекция присутствия -> liveness -> идентификация -> policy -> decision")
+        self.pipeline_log.setPlaceholderText("Краткий лог: присутствие, этап, итог решения")
         layout.addWidget(self.pipeline_log, 2)
 
         self.refresh_tree()
@@ -721,20 +718,17 @@ class MonitoringTab(QWidget):
     def append_pipeline_log(self, text: str):
         self.pipeline_log.append(text)
         doc = self.pipeline_log.document()
-        while doc.blockCount() > 250:
+        while doc.blockCount() > 80:
             cursor = self.pipeline_log.textCursor()
             cursor.movePosition(cursor.MoveOperation.Start)
             cursor.select(cursor.SelectionType.LineUnderCursor)
             cursor.removeSelectedText()
             cursor.deleteChar()
 
-    def detect_person_in_frame(self, frame_bytes):
-        if not frame_bytes:
+    def detect_person_in_frame(self, frame):
+        if frame is None:
             return False
-        arr = np.frombuffer(frame_bytes, dtype=np.uint8)
-        img = cv2.imdecode(arr, cv2.IMREAD_GRAYSCALE)
-        if img is None:
-            return False
+        img = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         faces = self.face_detector.detectMultiScale(img, scaleFactor=1.1, minNeighbors=4, minSize=(48, 48))
         return len(faces) > 0
 
@@ -825,11 +819,11 @@ class MonitoringTab(QWidget):
         voice_present, audio_probe = self.detect_voice_presence()
 
         for dev_id, t in self.active_cameras.items():
-            frame = t.get_frame_bytes()
-            if not frame:
+            frame_np = t.get_frame_copy()
+            if frame_np is None:
                 continue
 
-            person_present = self.detect_person_in_frame(frame)
+            person_present = self.detect_person_in_frame(frame_np)
             present = person_present or voice_present
 
             if present:
@@ -845,38 +839,62 @@ class MonitoringTab(QWidget):
             self.last_presence_state = True
 
             interval = 0.9 if (now - self.last_live_ok_ts) < 3.0 else 1.5
-            if (now - self.last_pipeline_ts) < interval:
+            if self.pipeline_inflight or (now - self.last_pipeline_ts) < interval:
                 continue
 
             self.last_pipeline_ts = now
+            self.pipeline_inflight = True
+
+            ok, enc = cv2.imencode('.jpg', frame_np)
+            if not ok:
+                self.pipeline_inflight = False
+                continue
+            frame = enc.tobytes()
 
             # Если голос уже найден на шаге presence, используем его, иначе добираем небольшой фрагмент.
             audio_bytes = audio_probe if voice_present else self.capture_audio_raw(duration_s=0.25, sample_rate=16000)
 
-            try:
-                result = self.client.run_identification_pipeline(dev_id, frame, audio_bytes=audio_bytes)
-                msg = f"{result['user_name']}: {'OK' if result['granted'] else 'NO'}\n{result['message']}"
-                color = (0, 255, 0) if result['granted'] else (0, 0, 255)
-                t.set_overlay(msg, color)
+            def _run_pipeline_and_update():
+                try:
+                    result = self.client.run_identification_pipeline(dev_id, frame, audio_bytes=audio_bytes)
+                except Exception as e:
+                    result = {"error": str(e)}
 
-                if result.get("face_score", 0.0) >= 0.5:
-                    self.last_live_ok_ts = now
+                def _apply():
+                    self.pipeline_inflight = False
+                    if "error" in result:
+                        self.append_pipeline_log(f"[ПАЙПЛАЙН] ошибка: {result['error']}")
+                        return
 
-                self.append_pipeline_log(f"Device ID: {dev_id}")
-                self.append_pipeline_log("=" * 50)
-                for line in result["details"]:
-                    self.append_pipeline_log(line)
-                self.append_pipeline_log("=" * 50)
-                self.append_pipeline_log(
-                    f"RESULT: {'GRANTED' if result['granted'] else 'DENIED'} | STAGE={result['stage']} | "
-                    f"VISION_OK={result['vision_ok']} | AUDIO_OK={result['audio_ok']} | CONF={result['final_confidence']:.3f}"
-                )
-            except Exception as e:
-                self.append_pipeline_log(f"[PIPELINE] ERROR: {e}")
+                    msg = f"{result['user_name']}: {'OK' if result['granted'] else 'NO'}\n{result['message']}"
+                    color = (0, 255, 0) if result['granted'] else (0, 0, 255)
+                    t.set_overlay(msg, color)
+
+                    if result.get("face_score", 0.0) >= 0.5:
+                        self.last_live_ok_ts = time.time()
+
+                    stage_map = {
+                        "presence": "присутствие",
+                        "liveness": "проверка живости",
+                        "identification": "идентификация",
+                        "policy": "проверка прав",
+                        "decision": "решение",
+                        "gateway_error": "ошибка шлюза",
+                    }
+                    stage = stage_map.get(result.get("stage", "decision"), result.get("stage", "decision"))
+                    self.append_pipeline_log(
+                        f"[{dev_id}] {'ДОСТУП' if result['granted'] else 'ОТКАЗ'} | этап: {stage} | "
+                        f"уверенность: {result.get('final_confidence', 0.0):.2f} | пользователь: {result.get('user_name', '-') }"
+                    )
+
+                QtCore.QTimer.singleShot(0, _apply)
+
+            self.pipeline_executor.submit(_run_pipeline_and_update)
 
     def closeEvent(self, event):
         self.stop_all_videos()
         self.mic_stream.stop()
+        self.pipeline_executor.shutdown(wait=False, cancel_futures=True)
         super().closeEvent(event)
 
 
@@ -974,6 +992,12 @@ class VideoThread(QThread):
             _, enc = cv2.imencode('.jpg', f)
             return enc.tobytes()
         return None
+
+    def get_frame_copy(self):
+        self.mutex.lock()
+        f = self.current_frame.copy() if self.current_frame is not None else None
+        self.mutex.unlock()
+        return f
 
 
 class AdminApp(QMainWindow):
