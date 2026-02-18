@@ -40,6 +40,7 @@ struct RuntimePlan {
     mode: String,
     vision_threads: usize,
     audio_threads: usize,
+    inter_threads: usize,
     force_cpu: bool,
     use_cuda: bool,
 }
@@ -147,8 +148,12 @@ impl GatewayService {
         let cpu_threads = std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(1);
+        
+        // Для твоего процессора (4 ядра / 8 потоков) это вернет 4.
+        // Мы ориентируемся на физические ядра для стабильности latency.
         let cpu_cores = (cpu_threads / 2).max(1);
         let gpu_available = PathBuf::from("/dev/nvidia0").exists();
+        
         HardwareProfile {
             cpu_cores,
             cpu_threads,
@@ -158,19 +163,31 @@ impl GatewayService {
 
     fn build_runtime_plan(mode: &str, hw: &HardwareProfile) -> RuntimePlan {
         let auto_gpu = mode == "auto" && hw.gpu_available;
+        
+        // СТРАТЕГИЯ ДЛЯ 4 ЯДЕР:
+        // Мы делим физические ядра пополам между видео и аудио.
+        // Video: 2 ядра, Audio: 2 ядра. Сумма = 4 (твои физические ядра).
+        // Это предотвращает троттлинг и переключение контекста.
+        let split_threads = (hw.cpu_cores / 2).max(1);
+
         if (mode == "gpu" || auto_gpu) && hw.gpu_available {
             RuntimePlan {
                 mode: "gpu".to_string(),
-                vision_threads: hw.cpu_threads.clamp(2, 8),
-                audio_threads: hw.cpu_cores.clamp(1, 4),
+                // Даже на GPU нужны CPU-потоки для препроцессинга, держим их в границах
+                vision_threads: split_threads.clamp(1, 4), 
+                audio_threads: split_threads.clamp(1, 4),
+                inter_threads: 1, // 1 поток на координацию графа
                 force_cpu: false,
                 use_cuda: true,
             }
         } else {
+            // CPU Mode (Критично для CachyOS)
             RuntimePlan {
                 mode: "cpu".to_string(),
-                vision_threads: hw.cpu_threads.clamp(2, 8),
-                audio_threads: hw.cpu_cores.clamp(1, 4),
+                // Жесткое разделение: 2 потока туда, 2 туда.
+                vision_threads: split_threads, 
+                audio_threads: split_threads,
+                inter_threads: 1, // Минимум для последовательных моделей
                 force_cpu: true,
                 use_cuda: false,
             }
@@ -180,15 +197,32 @@ impl GatewayService {
     async fn persist_runtime_mode(plan: &RuntimePlan) -> Result<(), Status> {
         let root = std::env::var("RUNTIME_ROOT_DIR").unwrap_or_else(|_| ".".to_string());
         let env_path = PathBuf::from(root).join(".server_runtime.env");
+        
+        // Добавляем INTER_THREADS и OPENBLAS_NUM_THREADS=1
+        // Это гарантирует, что библиотеки не будут "воровать" ядра у ONNX Runtime.
         let content = format!(
-            "# Saved by gateway ApplyRuntimeMode\nRUNTIME_MODE={}\nVISION_FORCE_CPU={}\nAUDIO_FORCE_CPU={}\nAUDIO_USE_CUDA={}\nVISION_CUDA_MEM_LIMIT_MB=1024\nAUDIO_CUDA_MEM_LIMIT_MB=256\nVISION_INTRA_THREADS={}\nAUDIO_INTRA_THREADS={}\n",
+            "# Saved by gateway ApplyRuntimeMode\n\
+            RUNTIME_MODE={}\n\
+            VISION_FORCE_CPU={}\n\
+            AUDIO_FORCE_CPU={}\n\
+            AUDIO_USE_CUDA={}\n\
+            VISION_CUDA_MEM_LIMIT_MB=1024\n\
+            AUDIO_CUDA_MEM_LIMIT_MB=256\n\
+            VISION_INTRA_THREADS={}\n\
+            VISION_INTER_THREADS={}\n\
+            AUDIO_INTRA_THREADS={}\n\
+            AUDIO_INTER_THREADS={}\n\
+            OPENBLAS_NUM_THREADS=1\n",
             plan.mode,
             if plan.force_cpu { 1 } else { 0 },
             if plan.force_cpu { 1 } else { 0 },
             if plan.use_cuda { 1 } else { 0 },
             plan.vision_threads,
+            plan.inter_threads,
             plan.audio_threads,
+            plan.inter_threads
         );
+        
         tokio::fs::write(env_path, content)
             .await
             .map_err(|e| Status::internal(format!("Failed to persist runtime mode: {}", e)))

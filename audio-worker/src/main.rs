@@ -181,10 +181,14 @@ impl ModelStore {
             }
         }
 
-        let intra_threads = env_usize("AUDIO_INTRA_THREADS").unwrap_or(4);
+        let intra_threads = env_usize("AUDIO_INTRA_THREADS").unwrap_or(2);
+        let inter_threads = env_usize("AUDIO_INTER_THREADS").unwrap_or(1);
+
         let builder_cpu = Session::builder()?
             .with_optimization_level(GraphOptimizationLevel::Level3)?
-            .with_intra_threads(intra_threads)?;
+            .with_intra_threads(intra_threads)?
+            .with_inter_threads(inter_threads)? 
+            .with_parallel_execution(true)?;    // Разрешает параллельный запуск узлов графа
         let (aasist, ecapa) =
             load_with_builder(&builder_cpu).context("Failed to load audio models on CPU")?;
 

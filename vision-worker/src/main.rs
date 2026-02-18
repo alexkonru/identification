@@ -376,10 +376,14 @@ impl ModelStore {
         arc_path: &Path,
         live_path: &Path,
     ) -> Result<(Session, Session, Session, String)> {
-        let intra_threads = env_usize("VISION_INTRA_THREADS").unwrap_or(4);
+        let intra_threads = env_usize("VISION_INTRA_THREADS").unwrap_or(2);
+        let inter_threads = env_usize("VISION_INTER_THREADS").unwrap_or(1);
+
         let builder_cpu = Session::builder()?
             .with_optimization_level(GraphOptimizationLevel::Level3)?
-            .with_intra_threads(intra_threads)?;
+            .with_intra_threads(intra_threads)?
+            .with_inter_threads(inter_threads)? 
+            .with_parallel_execution(true)?;    // Разрешает параллельный запуск узлов графа
 
         let sessions = Self::try_load(&builder_cpu, yunet_path, arc_path, live_path)
             .context("Не удалось загрузить модели даже на CPU")?;
