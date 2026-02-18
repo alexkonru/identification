@@ -803,12 +803,21 @@ impl Gatekeeper for GatewayService {
             }
         }
 
+        let face_conf = (1.0 - response.face_distance).clamp(0.0, 1.0);
+        let voice_conf = if response.voice_provided {
+            (1.0 - response.voice_distance).clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+        response.final_confidence =
+            (0.4 * response.face_liveness_score + 0.35 * face_conf + 0.25 * voice_conf)
+                .clamp(0.0, 1.0);
+
         // 4) Access policy check
         if device_id == self.test_device_id {
             response.granted = true;
             response.message = "Welcome (Test Device)".into();
             response.decision_stage = "granted".into();
-            response.final_confidence = if response.voice_provided { 0.95 } else { 0.85 };
             self.log_access(
                 Some(user_id),
                 device_id,
@@ -876,15 +885,6 @@ impl Gatekeeper for GatewayService {
             response.granted = true;
             response.message = format!("Welcome to {} / {}", zone_name, room_name);
             response.decision_stage = "granted".into();
-            let face_conf = (1.0 - response.face_distance).clamp(0.0, 1.0);
-            let voice_conf = if response.voice_provided {
-                (1.0 - response.voice_distance).clamp(0.0, 1.0)
-            } else {
-                1.0
-            };
-            response.final_confidence =
-                (0.4 * response.face_liveness_score + 0.35 * face_conf + 0.25 * voice_conf)
-                    .clamp(0.0, 1.0);
             self.log_access(
                 Some(user_id),
                 device_id,

@@ -253,10 +253,10 @@ class SystemTab(QWidget):
 
             self.lbl_runtime_info.setText(
                 f"Выбранный режим: {mode}\n"
-                f"Vision worker: устройство={vision_device}, потоки={vision_threads}, FORCE_CPU={vision_cpu}\n"
-                f"Audio worker: устройство={audio_device}, потоки={audio_threads}, FORCE_CPU={audio_cpu}, USE_CUDA={audio_cuda}\n"
-                f"Vision статус: {status.vision.message}\n"
-                f"Audio статус: {status.audio.message}"
+                f"Модуль видео (Vision): устройство={vision_device}, потоки ONNX={vision_threads}, FORCE_CPU={vision_cpu}\n"
+                f"Модуль аудио (Audio): устройство={audio_device}, потоки ONNX={audio_threads}, FORCE_CPU={audio_cpu}, USE_CUDA={audio_cuda}\n"
+                f"Статус Vision: {status.vision.message}\n"
+                f"Статус Audio: {status.audio.message}"
             )
         except Exception as e:
             for k in self.status_widgets:
@@ -477,7 +477,15 @@ class LogTab(QWidget):
         try:
             logs = self.client.get_logs(limit=100); self.table.setRowCount(len(logs))
             for i, log in enumerate(logs):
-                self.table.setItem(i, 0, QTableWidgetItem(str(log.id))); self.table.setItem(i, 1, QTableWidgetItem(log.timestamp))
+                ts = log.timestamp or ""
+                try:
+                    dt = QtCore.QDateTime.fromString(ts, Qt.DateFormat.ISODateWithMs)
+                    if not dt.isValid():
+                        dt = QtCore.QDateTime.fromString(ts, Qt.DateFormat.ISODate)
+                    ts_fmt = dt.toLocalTime().toString("dd.MM.yyyy HH:mm:ss") if dt.isValid() else ts
+                except Exception:
+                    ts_fmt = ts
+                self.table.setItem(i, 0, QTableWidgetItem(str(log.id))); self.table.setItem(i, 1, QTableWidgetItem(ts_fmt))
                 self.table.setItem(i, 2, QTableWidgetItem(log.user_name)); self.table.setItem(i, 3, QTableWidgetItem(log.room_name))
                 self.table.setItem(i, 4, QTableWidgetItem("✅" if log.access_granted else "❌"))
                 self.table.setItem(i, 5, QTableWidgetItem(log.details))
@@ -507,6 +515,7 @@ class HelpTab(QWidget):
             <li><b>Текущий режим выполнения</b>: CPU или GPU (определяется по фактическим устройствам воркеров).</li>
             <li><b>Модуль Vision</b>: устройство и число выделенных потоков для распознавания лица/живости.</li>
             <li><b>Модуль Audio</b>: устройство и число выделенных потоков для голоса/антиспуфинга.</li>
+            <li><b>Потоки ONNX</b>: это worker-потоки вычислительного движка ONNX Runtime (intra-op), а не прямое число занятых потоков всей ОС.</li>
             <li><b>Источник настроек</b>: файл <span class="code">.server_runtime.env</span>, который формируется сервером при старте.</li>
         </ul>
 
