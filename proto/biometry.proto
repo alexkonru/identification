@@ -233,7 +233,7 @@ message ScanHardwareResponse {
 }
 
 message RuntimeModeRequest {
-  string mode = 1; // cpu | gpu
+  string mode = 1; // auto | cpu | gpu
   bool restart_services = 2;
 }
 

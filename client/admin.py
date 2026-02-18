@@ -144,10 +144,10 @@ class BiometryClient:
     def get_logs(self, limit=50, offset=0):
         return self.stub.GetLogs(biometry_pb2.GetLogsRequest(limit=limit, offset=offset)).logs
 
-    def apply_runtime_mode(self, mode: str, restart_services: bool = True):
+    def apply_runtime_mode(self, restart_services: bool = True):
         return self.stub.ApplyRuntimeMode(
-            biometry_pb2.RuntimeModeRequest(mode=mode, restart_services=restart_services),
-            timeout=15.0,
+            biometry_pb2.RuntimeModeRequest(mode="auto", restart_services=restart_services),
+            timeout=20.0,
         )
 
 # --- UI Components ---
@@ -160,6 +160,7 @@ class SystemTab(QWidget):
         self.timer = QTimer()
         self.timer.timeout.connect(self.refresh_status)
         self.timer.start(3000)
+        self.refresh_runtime_info()
 
     def init_ui(self):
         layout = QVBoxLayout(self)
@@ -213,17 +214,14 @@ class SystemTab(QWidget):
         rt_group = QGroupBox("Runtime настройки (CPU/GPU)")
         rt_layout = QFormLayout()
 
-        self.cmb_runtime_mode = QComboBox()
-        self.cmb_runtime_mode.addItems([
-            "CPU (автооптимизация по железу)",
-            "GPU (если доступна CUDA)",
-        ])
+        self.lbl_runtime_info = QLabel("Режим не применён")
+        self.lbl_runtime_info.setWordWrap(True)
 
-        btn_apply_runtime = QPushButton("💾 Применить режим")
-        btn_apply_runtime.setMaximumWidth(240)
+        btn_apply_runtime = QPushButton("⚙️ Автооптимизация сервера")
+        btn_apply_runtime.setMaximumWidth(260)
         btn_apply_runtime.clicked.connect(self.apply_runtime_settings)
 
-        rt_layout.addRow("Режим выполнения:", self.cmb_runtime_mode)
+        rt_layout.addRow("Текущий runtime:", self.lbl_runtime_info)
         rt_layout.addRow(btn_apply_runtime)
         rt_group.setLayout(rt_layout)
         layout.addWidget(rt_group, 1)
@@ -244,6 +242,21 @@ class SystemTab(QWidget):
                 self.status_widgets[k][0].setText("🔴 Ошибка соединения")
                 self.status_widgets[k][2].setText(str(e))
 
+    def refresh_runtime_info(self):
+        try:
+            resp = self.client.apply_runtime_mode(restart_services=False)
+            details = (
+                f"{resp.saved_mode.upper()} | CPU: {resp.cpu_cores} ядер / {resp.cpu_threads} потоков | "
+                f"vision/audio потоки: {resp.vision_threads}/{resp.audio_threads}"
+            )
+            if resp.saved_mode.lower() == "gpu":
+                details += " | CUDA: включена"
+            else:
+                details += " | CUDA: отключена"
+            self.lbl_runtime_info.setText(details)
+        except Exception as e:
+            self.lbl_runtime_info.setText(f"Недоступно: {e}")
+
     def control_service(self, name, action):
         try: self.client.control_service(name, action); QMessageBox.information(self, "Результат", "Команда отправлена")
         except Exception as e: QMessageBox.critical(self, "Ошибка", str(e))
@@ -257,17 +270,17 @@ class SystemTab(QWidget):
 
     def apply_runtime_settings(self):
         try:
-            mode = "gpu" if self.cmb_runtime_mode.currentIndex() == 1 else "cpu"
-            resp = self.client.apply_runtime_mode(mode, restart_services=True)
-            QMessageBox.information(
-                self,
-                "Режим применён",
-                f"Режим: {resp.saved_mode.upper()}\n"
-                f"CPU: {resp.cpu_cores} ядер / {resp.cpu_threads} потоков\n"
-                f"GPU доступна: {'да' if resp.gpu_available else 'нет'}\n"
-                f"Потоки vision/audio: {resp.vision_threads}/{resp.audio_threads}\n"
-                f"{resp.message}",
+            resp = self.client.apply_runtime_mode(restart_services=True)
+            details = (
+                f"{resp.saved_mode.upper()} | CPU: {resp.cpu_cores} ядер / {resp.cpu_threads} потоков | "
+                f"vision/audio потоки: {resp.vision_threads}/{resp.audio_threads}"
             )
+            if resp.saved_mode.lower() == "gpu":
+                details += " | CUDA: включена"
+            else:
+                details += " | CUDA: отключена"
+            self.lbl_runtime_info.setText(details)
+            QMessageBox.information(self, "Runtime применён", f"{details}\n\n{resp.message}")
         except Exception as e:
             QMessageBox.critical(self, "Ошибка применения runtime", str(e))
 
@@ -506,8 +519,7 @@ class HelpTab(QWidget):
 
         <h3>⚙️ Режимы производительности</h3>
         <ul>
-            <li><b>CPU:</b> автооптимизация по количеству ядер/потоков на сервере.</li>
-            <li><b>GPU:</b> включается только если сервер видит CUDA-устройство.</li>
+            <li><b>Авто-режим:</b> сервер сам выбирает CPU/GPU и количество потоков под железо.</li>
         </ul>
 
         <h3>🏗 Инфраструктура</h3>
@@ -738,13 +750,14 @@ class MonitoringTab(QWidget):
                 self.pipeline_inflight = True
                 audio_bytes = audio_probe if voice_present else self.capture_audio_raw(duration_s=0.25, sample_rate=16000)
                 try:
-                    req = biometry_pb2.CheckAccessRequest(
-                        device_id=dev_id,
-                        image=frame,
-                        audio=audio_bytes or b"",
-                        audio_sample_rate=16000,
-                    )
-                    access = self.client.stub.CheckAccess(req)
+                    req_kwargs = {"device_id": dev_id, "image": frame}
+                    req_fields = getattr(biometry_pb2.CheckAccessRequest, "DESCRIPTOR", None)
+                    field_map = req_fields.fields_by_name if req_fields else {}
+                    if "audio" in field_map:
+                        req_kwargs["audio"] = audio_bytes or b""
+                    if "audio_sample_rate" in field_map:
+                        req_kwargs["audio_sample_rate"] = 16000
+                    access = self.client.stub.CheckAccess(biometry_pb2.CheckAccessRequest(**req_kwargs))
                 except Exception as e:
                     self.pipeline_inflight = False
                     self.pipeline_stage = "presence"

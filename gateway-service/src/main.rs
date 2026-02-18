@@ -157,7 +157,8 @@ impl GatewayService {
     }
 
     fn build_runtime_plan(mode: &str, hw: &HardwareProfile) -> RuntimePlan {
-        if mode == "gpu" && hw.gpu_available {
+        let auto_gpu = mode == "auto" && hw.gpu_available;
+        if (mode == "gpu" || auto_gpu) && hw.gpu_available {
             RuntimePlan {
                 mode: "gpu".to_string(),
                 vision_threads: hw.cpu_threads.clamp(2, 8),
@@ -1083,17 +1084,24 @@ impl Gatekeeper for GatewayService {
     ) -> Result<Response<RuntimeModeResponse>, Status> {
         let req = request.into_inner();
         let requested_mode = req.mode.to_lowercase();
-        if requested_mode != "cpu" && requested_mode != "gpu" {
-            return Err(Status::invalid_argument("mode must be cpu or gpu"));
+        if requested_mode != "cpu" && requested_mode != "gpu" && requested_mode != "auto" {
+            return Err(Status::invalid_argument("mode must be auto, cpu or gpu"));
         }
 
         let hw = Self::detect_hardware_profile();
         let plan = Self::build_runtime_plan(&requested_mode, &hw);
         self.persist_runtime_mode(&plan).await?;
 
+        let provider = if plan.mode == "gpu" { "CUDA" } else { "CPU" };
         let mut message = format!(
-            "Saved runtime mode '{}' (vision_threads={}, audio_threads={})",
-            plan.mode, plan.vision_threads, plan.audio_threads
+            "Saved runtime mode '{}' using {} (vision_threads={}, audio_threads={}, cpu_cores={}, cpu_threads={}, gpu_available={})",
+            plan.mode,
+            provider,
+            plan.vision_threads,
+            plan.audio_threads,
+            hw.cpu_cores,
+            hw.cpu_threads,
+            hw.gpu_available
         );
 
         if req.restart_services {
