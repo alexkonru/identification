@@ -1,7 +1,7 @@
-version: '3.8'
 services:
   db:
     image: pgvector/pgvector:pg16
+    container_name: biometry-db
     ports:
       - "5432:5432"
     environment:
@@ -9,4 +9,100 @@ services:
       POSTGRES_PASSWORD: password
       POSTGRES_DB: biometry_db
     volumes:
+      - db-data:/var/lib/postgresql/data
       - ./migrations:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U user -d biometry_db"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  vision-worker:
+    image: identification-rust-base:latest
+    container_name: vision-worker
+    working_dir: /workspace/identification
+    command: ["bash", "-lc", "cargo run -p vision-worker"]
+    ports:
+      - "50052:50052"
+    volumes:
+      - .:/workspace/identification
+      - cargo-registry:/usr/local/cargo/registry
+      - cargo-git:/usr/local/cargo/git
+      - target-cache-vision:/workspace/identification/target
+    environment:
+      RUST_LOG: "${RUST_LOG:-vision_worker=info,ort::logging=warn}"
+      # По умолчанию на слабых ноутбуках (MX230/Vega) безопаснее CPU.
+      # На мощной NVIDIA: VISION_FORCE_CPU=0
+      VISION_FORCE_CPU: "${VISION_FORCE_CPU:-1}"
+      VISION_CUDA_DEVICE_ID: "${VISION_CUDA_DEVICE_ID:-}"
+      VISION_CUDA_MEM_LIMIT_MB: "${VISION_CUDA_MEM_LIMIT_MB:-1024}"
+      VISION_INTRA_THREADS: "${VISION_INTRA_THREADS:-4}"
+      ORT_STRATEGY: "${ORT_STRATEGY:-download}"
+      NVIDIA_VISIBLE_DEVICES: "${NVIDIA_VISIBLE_DEVICES:-all}"
+      NVIDIA_DRIVER_CAPABILITIES: "${NVIDIA_DRIVER_CAPABILITIES:-compute,utility}"
+    gpus: all
+    depends_on:
+      db:
+        condition: service_healthy
+
+  audio-worker:
+    image: identification-rust-base:latest
+    container_name: audio-worker
+    working_dir: /workspace/identification
+    command: ["bash", "-lc", "cargo run -p audio-worker"]
+    ports:
+      - "50053:50053"
+    volumes:
+      - .:/workspace/identification
+      - cargo-registry:/usr/local/cargo/registry
+      - cargo-git:/usr/local/cargo/git
+      - target-cache-audio:/workspace/identification/target
+    environment:
+      RUST_LOG: "${RUST_LOG:-audio_worker=info,ort::logging=warn}"
+      AUDIO_FORCE_CPU: "${AUDIO_FORCE_CPU:-1}"
+      AUDIO_USE_CUDA: "${AUDIO_USE_CUDA:-0}"
+      AUDIO_CUDA_MEM_LIMIT_MB: "${AUDIO_CUDA_MEM_LIMIT_MB:-256}"
+      AUDIO_INTRA_THREADS: "${AUDIO_INTRA_THREADS:-2}"
+      ORT_STRATEGY: "${ORT_STRATEGY:-download}"
+      NVIDIA_VISIBLE_DEVICES: "${NVIDIA_VISIBLE_DEVICES:-all}"
+      NVIDIA_DRIVER_CAPABILITIES: "${NVIDIA_DRIVER_CAPABILITIES:-compute,utility}"
+    gpus: all
+    depends_on:
+      db:
+        condition: service_healthy
+
+  gateway-service:
+    image: identification-rust-base:latest
+    container_name: gateway-service
+    working_dir: /workspace/identification
+    command: ["bash", "-lc", "cargo run -p gateway-service"]
+    ports:
+      - "50051:50051"
+    volumes:
+      - .:/workspace/identification
+      - cargo-registry:/usr/local/cargo/registry
+      - cargo-git:/usr/local/cargo/git
+      - target-cache-gateway:/workspace/identification/target
+    environment:
+      RUST_LOG: "${RUST_LOG:-gateway_service=info}"
+      DATABASE_URL: "postgres://user:password@db:5432/biometry_db"
+      AUDIO_URL: "http://audio-worker:50053"
+      VISION_URL: "http://vision-worker:50052"
+      FACE_SIMILARITY_THRESHOLD: "${FACE_SIMILARITY_THRESHOLD:-0.6}"
+      VOICE_SIMILARITY_THRESHOLD: "${VOICE_SIMILARITY_THRESHOLD:-0.6}"
+      TEST_DEVICE_ID: "${TEST_DEVICE_ID:-9999}"
+    depends_on:
+      db:
+        condition: service_healthy
+      audio-worker:
+        condition: service_started
+      vision-worker:
+        condition: service_started
+
+volumes:
+  db-data:
+  cargo-registry:
+  cargo-git:
+  target-cache-vision:
+  target-cache-audio:
+  target-cache-gateway:
