@@ -196,7 +196,7 @@ impl GatewayService {
 
     async fn restart_stack(&self) -> Result<(), Status> {
         let root = std::env::var("RUNTIME_ROOT_DIR").unwrap_or_else(|_| ".".to_string());
-        let cmd = "if [ -x ./stop_all.sh ] && [ -x ./start_all.sh ]; then ./stop_all.sh && ./start_all.sh; else exit 1; fi";
+        let cmd = "if [ -x ./stop_docker.sh ] && [ -x ./start_docker.sh ]; then ./stop_docker.sh && ./start_docker.sh; else exit 1; fi";
         let output = Command::new("bash")
             .arg("-lc")
             .arg(cmd)
