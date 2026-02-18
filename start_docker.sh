@@ -2,37 +2,47 @@
 set -euo pipefail
 
 # Запуск всей системы в Docker с поддержкой GPU.
-# По умолчанию:
-# - vision пытается работать на GPU,
-# - audio работает на CPU (чтобы не отбирать VRAM у vision).
+# По умолчанию оба worker запускаются в CPU-режиме.
+
+# Загружаем сохранённые runtime-настройки (если есть),
+# чтобы клиент мог централизованно менять режим запуска.
+RUNTIME_ENV_FILE="${RUNTIME_ENV_FILE:-.server_runtime.env}"
+if [ -f "$RUNTIME_ENV_FILE" ]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "$RUNTIME_ENV_FILE"
+  set +a
+fi
 
 # Перед запуском проверяем, что Docker видит compose-плагин.
 docker compose version >/dev/null
 
-# Проверяем, что Docker Engine умеет выдавать GPU контейнерам.
-# Без nvidia-container-toolkit будет ошибка вида:
-# "could not select device driver \"\" with capabilities: [[gpu]]"
-if ! docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi >/dev/null 2>&1; then
+# Проверяем, что Docker Engine умеет выдавать GPU контейнерам.\
+if ! docker run --rm --gpus all nvidia/cuda:12.6.0-base-ubuntu24.04 nvidia-smi >/dev/null 2>&1; then
   cat <<'MSG'
 [ERROR] Docker сейчас не может использовать GPU (NVIDIA runtime недоступен).
 
-Что нужно сделать на хосте (CachyOS/Arch):
+Что нужно сделать на хосте:
   1) Установить nvidia-container-toolkit.
   2) Настроить runtime для Docker и перезапустить docker.service.
   3) Проверить командой:
-       docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi
+       docker run --rm --gpus all nvidia/cuda:12.6.0-base-ubuntu24.04 nvidia-smi
 
-После этого снова запусти:
-  ./start_docker.sh
 MSG
   exit 1
 fi
 
 # Собираем базовый образ один раз (без повторной сборки для каждого сервиса).
-docker build -t identification-rust-base:latest -f Dockerfile .
+# Предпочитаем buildx (BuildKit), при отсутствии fallback на обычный docker build.
+if docker buildx version >/dev/null 2>&1; then
+  docker buildx build --load -t identification-rust-base:latest -f Dockerfile .
+else
+  echo "[WARN] buildx plugin не найден, используем legacy docker build." >&2
+  docker build -t identification-rust-base:latest -f Dockerfile .
+fi
 
 # Запуск сервисов в фоне (без дополнительной сборки через compose).
-docker compose up -d --no-build db vision-worker audio-worker gateway-service
+docker compose up -d --no-build --force-recreate --remove-orphans db vision-worker audio-worker gateway-service
 
 # Ждём, пока gateway откроет порт на хосте.
 wait_gateway() {
@@ -55,11 +65,6 @@ if ! wait_gateway; then
   docker compose logs --tail=120 gateway-service || true
   exit 1
 fi
-# Сборка образа (один общий image для всех rust-сервисов).
-docker compose build
-
-# Запуск сервисов в фоне.
-docker compose up -d db vision-worker audio-worker gateway-service
 
 # Печатаем состояние контейнеров.
 docker compose ps
@@ -74,3 +79,8 @@ echo "Проверка GPU внутри vision-контейнера:"
 echo "  docker compose exec vision-worker nvidia-smi"
 echo
 echo "Для клиента с хоста используй gateway: 127.0.0.1:50051"
+
+echo
+echo "Остановка Docker-сервисов:"
+echo "  docker compose stop      # остановить контейнеры"
+echo "  docker compose down      # остановить и удалить контейнеры/сеть"

@@ -1,29 +1,7 @@
-<<<<<<< codex/review-database-structure-and-normalization-jm5fp2
-x-rust-service: &rust-service
-  image: identification-rust-base:latest
-=======
-version: '3.9'
-
-x-rust-service: &rust-service
-  image: identification-rust-base:latest
-  build:
-    context: .
-    dockerfile: Dockerfile
->>>>>>> master
-  working_dir: /workspace/identification
-  volumes:
-    - .:/workspace/identification
-    - cargo-registry:/usr/local/cargo/registry
-    - cargo-git:/usr/local/cargo/git
-    - target-cache:/workspace/identification/target
-  environment:
-    RUST_LOG: "${RUST_LOG:-vision_worker=info,audio_worker=info,gateway_service=info,ort::logging=warn}"
-    NVIDIA_VISIBLE_DEVICES: "${NVIDIA_VISIBLE_DEVICES:-all}"
-    NVIDIA_DRIVER_CAPABILITIES: "${NVIDIA_DRIVER_CAPABILITIES:-compute,utility}"
-
 services:
   db:
     image: pgvector/pgvector:pg16
+    container_name: biometry-db
     container_name: biometry-db
     ports:
       - "5432:5432"
@@ -33,6 +11,7 @@ services:
       POSTGRES_DB: biometry_db
     volumes:
       - db-data:/var/lib/postgresql/data
+      - db-data:/var/lib/postgresql/data
       - ./migrations:/docker-entrypoint-initdb.d
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U user -d biometry_db"]
@@ -41,47 +20,87 @@ services:
       retries: 20
 
   vision-worker:
-    <<: *rust-service
+    image: identification-rust-base:latest
     container_name: vision-worker
-    command: ["bash", "-lc", "cargo run -p vision-worker"]
+    working_dir: /workspace/identification
+    command: ["bash", "-lc", "cargo run --release -p vision-worker"]
+    cpuset: "0,1"
     ports:
       - "50052:50052"
+    volumes:
+      - .:/workspace/identification
+      - cargo-registry:/usr/local/cargo/registry
+      - cargo-git:/usr/local/cargo/git
+      - target-cache-vision:/workspace/identification/target
     environment:
       RUST_LOG: "${RUST_LOG:-vision_worker=info,ort::logging=warn}"
-      VISION_FORCE_CPU: "${VISION_FORCE_CPU:-0}"
+      # По умолчанию на слабых ноутбуках (MX230/Vega) безопаснее CPU.
+      # На мощной NVIDIA: VISION_FORCE_CPU=0
+      VISION_FORCE_CPU: "${VISION_FORCE_CPU:-1}"
       VISION_CUDA_DEVICE_ID: "${VISION_CUDA_DEVICE_ID:-}"
-      VISION_CUDA_MEM_LIMIT_MB: "${VISION_CUDA_MEM_LIMIT_MB:-1536}"
+      VISION_CUDA_MEM_LIMIT_MB: "${VISION_CUDA_MEM_LIMIT_MB:-1024}"
+      # Сумма INTRA_THREADS не должна превышать количество ядер в cpuset 
+      VISION_INTRA_THREADS: 2 
+      VISION_INTER_THREADS: 1
+      # Запрещаем OpenBLAS создавать лишние потоки поверх ONNX Runtime 
+      OPENBLAS_NUM_THREADS: 1
+      ORT_STRATEGY: "${ORT_STRATEGY:-download}"
       NVIDIA_VISIBLE_DEVICES: "${NVIDIA_VISIBLE_DEVICES:-all}"
       NVIDIA_DRIVER_CAPABILITIES: "${NVIDIA_DRIVER_CAPABILITIES:-compute,utility}"
     gpus: all
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
     depends_on:
       db:
         condition: service_healthy
 
   audio-worker:
-    <<: *rust-service
+    image: identification-rust-base:latest
     container_name: audio-worker
-    command: ["bash", "-lc", "cargo run -p audio-worker"]
+    working_dir: /workspace/identification
+    command: ["bash", "-lc", "cargo run --release -p audio-worker"]
+    cpuset: "2,3"
     ports:
       - "50053:50053"
+    volumes:
+      - .:/workspace/identification
+      - cargo-registry:/usr/local/cargo/registry
+      - cargo-git:/usr/local/cargo/git
+      - target-cache-audio:/workspace/identification/target
     environment:
       RUST_LOG: "${RUST_LOG:-audio_worker=info,ort::logging=warn}"
+      AUDIO_FORCE_CPU: "${AUDIO_FORCE_CPU:-1}"
       AUDIO_USE_CUDA: "${AUDIO_USE_CUDA:-0}"
-      AUDIO_FORCE_CPU: "${AUDIO_FORCE_CPU:-0}"
       AUDIO_CUDA_MEM_LIMIT_MB: "${AUDIO_CUDA_MEM_LIMIT_MB:-256}"
+      AUDIO_INTRA_THREADS: 2
+      AUDIO_INTER_THREADS: 1
+      OPENBLAS_NUM_THREADS: 1
+      ORT_STRATEGY: "${ORT_STRATEGY:-download}"
       NVIDIA_VISIBLE_DEVICES: "${NVIDIA_VISIBLE_DEVICES:-all}"
       NVIDIA_DRIVER_CAPABILITIES: "${NVIDIA_DRIVER_CAPABILITIES:-compute,utility}"
     gpus: all
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
     depends_on:
       db:
         condition: service_healthy
 
   gateway-service:
-    <<: *rust-service
+    image: identification-rust-base:latest
     container_name: gateway-service
-    command: ["bash", "-lc", "cargo run -p gateway-service"]
+    working_dir: /workspace/identification
+    command: ["bash", "-lc", "cargo run --release -p gateway-service"]
     ports:
       - "50051:50051"
+    volumes:
+      - .:/workspace/identification
+      - cargo-registry:/usr/local/cargo/registry
+      - cargo-git:/usr/local/cargo/git
+      - target-cache-gateway:/workspace/identification/target
     environment:
       RUST_LOG: "${RUST_LOG:-gateway_service=info}"
       DATABASE_URL: "postgres://user:password@db:5432/biometry_db"
@@ -102,4 +121,6 @@ volumes:
   db-data:
   cargo-registry:
   cargo-git:
-  target-cache:
+  target-cache-vision:
+  target-cache-audio:
+  target-cache-gateway:

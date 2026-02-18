@@ -1,5 +1,7 @@
 use glob::glob;
 use pgvector::Vector;
+use glob::glob;
+use pgvector::Vector;
 use shared::biometry::gatekeeper_server::{Gatekeeper, GatekeeperServer};
 use shared::biometry::{
     AccessCheckResponse, AddDeviceRequest, AddRoomRequest, AddZoneRequest, CheckAccessRequest,
@@ -7,12 +9,20 @@ use shared::biometry::{
     GetUserAccessResponse, GrantAccessRequest, IdRequest, IdResponse, ImageFrame,
     ListDevicesRequest, ListDevicesResponse, ListRoomsRequest, ListRoomsResponse, ListUsersRequest,
     ListUsersResponse, ListZonesRequest, ListZonesResponse, LogEntry, RegisterUserRequest, Room,
-    ScanHardwareResponse, ServiceStatus, SetAccessRulesRequest, StatusResponse,
-    SystemStatusResponse, User, Zone, audio_client::AudioClient, vision_client::VisionClient,
+    RuntimeModeRequest, RuntimeModeResponse, ScanHardwareResponse, ServiceStatus,
+    SetAccessRulesRequest, StatusResponse, SystemStatusResponse, User, Zone,
+    audio_client::AudioClient, vision_client::VisionClient,
 };
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{Pool, Postgres, Row};
+use std::path::PathBuf;
+use tokio::process::Command;
 use tokio::sync::mpsc;
+use tokio::time::{Duration, sleep};
+use tonic::{
+    Request, Response, Status,
+    transport::{Channel, Server},
+};
 use tokio::time::{Duration, sleep};
 use tonic::{
     Request, Response, Status,
@@ -27,11 +37,27 @@ struct FaceProcessResult {
     provider: String,
 }
 
+struct HardwareProfile {
+    cpu_cores: usize,
+    cpu_threads: usize,
+    gpu_available: bool,
+}
+
+struct RuntimePlan {
+    mode: String,
+    vision_threads: usize,
+    audio_threads: usize,
+    inter_threads: usize,
+    force_cpu: bool,
+    use_cuda: bool,
+}
+
 pub struct GatewayService {
     pool: Pool<Postgres>,
     audio_channel: Channel,
     vision_channel: Channel,
     face_similarity_threshold: f64,
+    voice_similarity_threshold: f64,
     voice_similarity_threshold: f64,
     test_device_id: i32,
     shutdown_tx: mpsc::Sender<()>,
@@ -47,11 +73,21 @@ impl GatewayService {
         test_device_id: i32,
         shutdown_tx: mpsc::Sender<()>,
     ) -> Self {
+    pub fn new(
+        pool: Pool<Postgres>,
+        audio_channel: Channel,
+        vision_channel: Channel,
+        face_similarity_threshold: f64,
+        voice_similarity_threshold: f64,
+        test_device_id: i32,
+        shutdown_tx: mpsc::Sender<()>,
+    ) -> Self {
         Self {
             pool,
             audio_channel,
             vision_channel,
             face_similarity_threshold,
+            voice_similarity_threshold,
             voice_similarity_threshold,
             test_device_id,
             shutdown_tx,
@@ -79,6 +115,7 @@ impl GatewayService {
                     Ok(None)
                 }
             }
+            }
             Err(e) => Err(Status::internal(format!("Vision service error: {}", e))),
         }
     }
@@ -99,10 +136,12 @@ impl GatewayService {
                     Ok(None)
                 }
             }
+            }
             Err(e) => Err(Status::internal(format!("Audio service error: {}", e))),
         }
     }
 
+    async fn log_access(&self, user_id: Option<i32>, device_id: i32, granted: bool, details: &str) {
     async fn log_access(&self, user_id: Option<i32>, device_id: i32, granted: bool, details: &str) {
         let _ = sqlx::query(
             "INSERT INTO access_logs (user_id, device_id, granted, details) VALUES ($1, $2, $3, $4)",
@@ -125,6 +164,111 @@ impl GatewayService {
             is_active: true,
         }
     }
+
+    fn detect_hardware_profile() -> HardwareProfile {
+        let cpu_threads = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1);
+        
+        // Для твоего процессора (4 ядра / 8 потоков) это вернет 4.
+        // Мы ориентируемся на физические ядра для стабильности latency.
+        let cpu_cores = (cpu_threads / 2).max(1);
+        let gpu_available = PathBuf::from("/dev/nvidia0").exists();
+        
+        HardwareProfile {
+            cpu_cores,
+            cpu_threads,
+            gpu_available,
+        }
+    }
+
+    fn build_runtime_plan(mode: &str, hw: &HardwareProfile) -> RuntimePlan {
+        let auto_gpu = mode == "auto" && hw.gpu_available;
+        
+        // СТРАТЕГИЯ ДЛЯ 4 ЯДЕР:
+        // Мы делим физические ядра пополам между видео и аудио.
+        // Video: 2 ядра, Audio: 2 ядра. Сумма = 4 (твои физические ядра).
+        // Это предотвращает троттлинг и переключение контекста.
+        let split_threads = (hw.cpu_cores / 2).max(1);
+
+        if (mode == "gpu" || auto_gpu) && hw.gpu_available {
+            RuntimePlan {
+                mode: "gpu".to_string(),
+                // Даже на GPU нужны CPU-потоки для препроцессинга, держим их в границах
+                vision_threads: split_threads.clamp(1, 4), 
+                audio_threads: split_threads.clamp(1, 4),
+                inter_threads: 1, // 1 поток на координацию графа
+                force_cpu: false,
+                use_cuda: true,
+            }
+        } else {
+            // CPU Mode (Критично для CachyOS)
+            RuntimePlan {
+                mode: "cpu".to_string(),
+                // Жесткое разделение: 2 потока туда, 2 туда.
+                vision_threads: split_threads, 
+                audio_threads: split_threads,
+                inter_threads: 1, // Минимум для последовательных моделей
+                force_cpu: true,
+                use_cuda: false,
+            }
+        }
+    }
+
+    async fn persist_runtime_mode(plan: &RuntimePlan) -> Result<(), Status> {
+        let root = std::env::var("RUNTIME_ROOT_DIR").unwrap_or_else(|_| ".".to_string());
+        let env_path = PathBuf::from(root).join(".server_runtime.env");
+        
+        // Добавляем INTER_THREADS и OPENBLAS_NUM_THREADS=1
+        // Это гарантирует, что библиотеки не будут "воровать" ядра у ONNX Runtime.
+        let content = format!(
+            "# Saved by gateway ApplyRuntimeMode\n\
+            RUNTIME_MODE={}\n\
+            VISION_FORCE_CPU={}\n\
+            AUDIO_FORCE_CPU={}\n\
+            AUDIO_USE_CUDA={}\n\
+            VISION_CUDA_MEM_LIMIT_MB=1024\n\
+            AUDIO_CUDA_MEM_LIMIT_MB=256\n\
+            VISION_INTRA_THREADS={}\n\
+            VISION_INTER_THREADS={}\n\
+            AUDIO_INTRA_THREADS={}\n\
+            AUDIO_INTER_THREADS={}\n\
+            OPENBLAS_NUM_THREADS=1\n",
+            plan.mode,
+            if plan.force_cpu { 1 } else { 0 },
+            if plan.force_cpu { 1 } else { 0 },
+            if plan.use_cuda { 1 } else { 0 },
+            plan.vision_threads,
+            plan.inter_threads,
+            plan.audio_threads,
+            plan.inter_threads
+        );
+        
+        tokio::fs::write(env_path, content)
+            .await
+            .map_err(|e| Status::internal(format!("Failed to persist runtime mode: {}", e)))
+    }
+
+    async fn restart_stack(&self) -> Result<(), Status> {
+        let root = std::env::var("RUNTIME_ROOT_DIR").unwrap_or_else(|_| ".".to_string());
+        let cmd = "if [ -x ./stop_docker.sh ] && [ -x ./start_docker.sh ]; then ./stop_docker.sh && ./start_docker.sh; else exit 1; fi";
+        let output = Command::new("bash")
+            .arg("-lc")
+            .arg(cmd)
+            .current_dir(root)
+            .output()
+            .await
+            .map_err(|e| Status::internal(format!("Failed to execute restart scripts: {}", e)))?;
+
+        if output.status.success() {
+            Ok(())
+        } else {
+            Err(Status::internal(format!(
+                "Restart failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            )))
+        }
+    }
 }
 
 #[tonic::async_trait]
@@ -141,6 +285,11 @@ impl Gatekeeper for GatewayService {
             .begin()
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
 
         // 1. Create User
         let row = sqlx::query("INSERT INTO users (name) VALUES ($1) RETURNING id")
@@ -152,10 +301,15 @@ impl Gatekeeper for GatewayService {
         let user_id: i32 = row
             .try_get("id")
             .map_err(|e| Status::internal(e.to_string()))?;
+        let user_id: i32 = row
+            .try_get("id")
+            .map_err(|e| Status::internal(e.to_string()))?;
 
         // 2. Process Images
         for image_bytes in req.images {
             if let Ok(Some(embedding)) = self.process_face_full(&image_bytes).await {
+                sqlx::query(
+                    "INSERT INTO face_embeddings (user_id, embedding) VALUES ($1, $2) ON CONFLICT (user_id) DO UPDATE SET embedding = EXCLUDED.embedding",
                 sqlx::query(
                     "INSERT INTO face_embeddings (user_id, embedding) VALUES ($1, $2) ON CONFLICT (user_id) DO UPDATE SET embedding = EXCLUDED.embedding",
                 )
@@ -172,6 +326,8 @@ impl Gatekeeper for GatewayService {
             if let Ok(Some(embedding)) = self.process_voice_embedding(&voice_bytes).await {
                 sqlx::query(
                     "INSERT INTO voice_embeddings (user_id, embedding) VALUES ($1, $2) ON CONFLICT (user_id) DO UPDATE SET embedding = EXCLUDED.embedding",
+                sqlx::query(
+                    "INSERT INTO voice_embeddings (user_id, embedding) VALUES ($1, $2) ON CONFLICT (user_id) DO UPDATE SET embedding = EXCLUDED.embedding",
                 )
                 .bind(user_id)
                 .bind(Vector::from(embedding))
@@ -181,6 +337,9 @@ impl Gatekeeper for GatewayService {
             }
         }
 
+        tx.commit()
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
         tx.commit()
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
@@ -200,10 +359,17 @@ impl Gatekeeper for GatewayService {
             .begin()
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
 
         // Process Images
         for image_bytes in req.images {
             if let Ok(Some(embedding)) = self.process_face_full(&image_bytes).await {
+                sqlx::query(
+                    "INSERT INTO face_embeddings (user_id, embedding) VALUES ($1, $2) ON CONFLICT (user_id) DO UPDATE SET embedding = EXCLUDED.embedding",
                 sqlx::query(
                     "INSERT INTO face_embeddings (user_id, embedding) VALUES ($1, $2) ON CONFLICT (user_id) DO UPDATE SET embedding = EXCLUDED.embedding",
                 )
@@ -220,6 +386,8 @@ impl Gatekeeper for GatewayService {
             if let Ok(Some(embedding)) = self.process_voice_embedding(&voice_bytes).await {
                 sqlx::query(
                     "INSERT INTO voice_embeddings (user_id, embedding) VALUES ($1, $2) ON CONFLICT (user_id) DO UPDATE SET embedding = EXCLUDED.embedding",
+                sqlx::query(
+                    "INSERT INTO voice_embeddings (user_id, embedding) VALUES ($1, $2) ON CONFLICT (user_id) DO UPDATE SET embedding = EXCLUDED.embedding",
                 )
                 .bind(user_id)
                 .bind(Vector::from(embedding))
@@ -229,6 +397,9 @@ impl Gatekeeper for GatewayService {
             }
         }
 
+        tx.commit()
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
         tx.commit()
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
@@ -258,8 +429,13 @@ impl Gatekeeper for GatewayService {
         let users = rows
             .into_iter()
             .map(|r| User {
+        let users = rows
+            .into_iter()
+            .map(|r| User {
                 id: r.get("id"),
                 name: r.get("name"),
+            })
+            .collect();
             })
             .collect();
 
@@ -281,6 +457,10 @@ impl Gatekeeper for GatewayService {
         let id: i32 = row
             .try_get("id")
             .map_err(|e| Status::internal(e.to_string()))?;
+
+        let id: i32 = row
+            .try_get("id")
+            .map_err(|e| Status::internal(e.to_string()))?;
         Ok(Response::new(IdResponse { id }))
     }
 
@@ -296,8 +476,13 @@ impl Gatekeeper for GatewayService {
         let zones = rows
             .into_iter()
             .map(|r| Zone {
+        let zones = rows
+            .into_iter()
+            .map(|r| Zone {
                 id: r.get("id"),
                 name: r.get("name"),
+            })
+            .collect();
             })
             .collect();
 
@@ -315,7 +500,16 @@ impl Gatekeeper for GatewayService {
             .fetch_one(&self.pool)
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
+        let row = sqlx::query("INSERT INTO rooms (name, zone_id) VALUES ($1, $2) RETURNING id")
+            .bind(req.name)
+            .bind(req.zone_id)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
 
+        let id: i32 = row
+            .try_get("id")
+            .map_err(|e| Status::internal(e.to_string()))?;
         let id: i32 = row
             .try_get("id")
             .map_err(|e| Status::internal(e.to_string()))?;
@@ -334,9 +528,14 @@ impl Gatekeeper for GatewayService {
         let rooms = rows
             .into_iter()
             .map(|r| Room {
+        let rooms = rows
+            .into_iter()
+            .map(|r| Room {
                 id: r.get("id"),
                 zone_id: r.get("zone_id"),
                 name: r.get("name"),
+            })
+            .collect();
             })
             .collect();
 
@@ -357,7 +556,21 @@ impl Gatekeeper for GatewayService {
             ));
         }
 
+        if req.device_type.trim().is_empty() {
+            return Err(Status::invalid_argument("device_type must not be empty"));
+        }
+        if req.connection_string.trim().is_empty() {
+            return Err(Status::invalid_argument(
+                "connection_string must not be empty",
+            ));
+        }
+
         let row = sqlx::query(
+            r#"
+            INSERT INTO devices (name, room_id, device_type_id, connection_string)
+            VALUES ($1, $2, (SELECT id FROM device_types WHERE name = $3), $4)
+            RETURNING id
+            "#,
             r#"
             INSERT INTO devices (name, room_id, device_type_id, connection_string)
             VALUES ($1, $2, (SELECT id FROM device_types WHERE name = $3), $4)
@@ -379,7 +592,19 @@ impl Gatekeeper for GatewayService {
                 Status::internal(e.to_string())
             }
         })?;
+        .map_err(|e| {
+            if e.to_string()
+                .contains("null value in column \"device_type_id\"")
+            {
+                Status::invalid_argument("unknown device_type")
+            } else {
+                Status::internal(e.to_string())
+            }
+        })?;
 
+        let id: i32 = row
+            .try_get("id")
+            .map_err(|e| Status::internal(e.to_string()))?;
         let id: i32 = row
             .try_get("id")
             .map_err(|e| Status::internal(e.to_string()))?;
@@ -391,6 +616,11 @@ impl Gatekeeper for GatewayService {
         _request: Request<ListDevicesRequest>,
     ) -> Result<Response<ListDevicesResponse>, Status> {
         let rows = sqlx::query(
+            r#"
+            SELECT d.id, d.room_id, d.name, dt.name AS device_type, d.connection_string
+            FROM devices d
+            JOIN device_types dt ON dt.id = d.device_type_id
+            "#,
             r#"
             SELECT d.id, d.room_id, d.name, dt.name AS device_type, d.connection_string
             FROM devices d
@@ -419,8 +649,27 @@ impl Gatekeeper for GatewayService {
                 }
             })
             .collect();
+        let mut devices: Vec<Device> = rows
+            .into_iter()
+            .map(|r| {
+                let id: i32 = r.get("id");
+                let room_id: i32 = r.get("room_id");
+                let name: String = r.get("name");
+                let device_type: String = r.get("device_type");
+                let connection_string: String = r.get("connection_string");
+                Device {
+                    id,
+                    room_id,
+                    name,
+                    device_type,
+                    connection_string,
+                    is_active: true,
+                }
+            })
+            .collect();
 
         if devices.is_empty() {
+            devices.push(self.get_default_test_device().await);
             devices.push(self.get_default_test_device().await);
         }
 
@@ -428,7 +677,9 @@ impl Gatekeeper for GatewayService {
     }
 
     async fn remove_device(&self, request: Request<IdRequest>) -> Result<Response<Empty>, Status> {
+    async fn remove_device(&self, request: Request<IdRequest>) -> Result<Response<Empty>, Status> {
         let req = request.into_inner();
+        sqlx::query("DELETE FROM devices WHERE id = $1")
         sqlx::query("DELETE FROM devices WHERE id = $1")
             .bind(req.id)
             .execute(&self.pool)
@@ -445,6 +696,7 @@ impl Gatekeeper for GatewayService {
     ) -> Result<Response<Empty>, Status> {
         let req = request.into_inner();
         sqlx::query(
+            "INSERT INTO access_rules_zones (user_id, zone_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
             "INSERT INTO access_rules_zones (user_id, zone_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
         )
         .bind(req.user_id)
@@ -471,6 +723,17 @@ impl Gatekeeper for GatewayService {
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
         sqlx::query("DELETE FROM access_rules_rooms WHERE user_id = $1")
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+        sqlx::query("DELETE FROM access_rules_zones WHERE user_id = $1")
+            .bind(req.user_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+        sqlx::query("DELETE FROM access_rules_rooms WHERE user_id = $1")
             .bind(req.user_id)
             .execute(&mut *tx)
             .await
@@ -479,14 +742,35 @@ impl Gatekeeper for GatewayService {
         for zone_id in req.allowed_zone_ids {
             sqlx::query(
                 "INSERT INTO access_rules_zones (user_id, zone_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+        for zone_id in req.allowed_zone_ids {
+            sqlx::query(
+                "INSERT INTO access_rules_zones (user_id, zone_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
             )
+            .bind(req.user_id)
+            .bind(zone_id)
+            .execute(&mut *tx)
             .bind(req.user_id)
             .bind(zone_id)
             .execute(&mut *tx)
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
         }
+        }
 
+        for room_id in req.allowed_room_ids {
+            sqlx::query(
+                "INSERT INTO access_rules_rooms (user_id, room_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+            )
+            .bind(req.user_id)
+            .bind(room_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+        }
+
+        tx.commit()
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
         for room_id in req.allowed_room_ids {
             sqlx::query(
                 "INSERT INTO access_rules_rooms (user_id, room_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
@@ -514,7 +798,25 @@ impl Gatekeeper for GatewayService {
             .fetch_all(&self.pool)
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
+        let room_rows = sqlx::query("SELECT room_id FROM access_rules_rooms WHERE user_id = $1")
+            .bind(req.id)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
 
+        let zone_rows = sqlx::query("SELECT zone_id FROM access_rules_zones WHERE user_id = $1")
+            .bind(req.id)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+
+        let room_ids = room_rows.into_iter().map(|r| r.get("room_id")).collect();
+        let zone_ids = zone_rows.into_iter().map(|r| r.get("zone_id")).collect();
+
+        Ok(Response::new(GetUserAccessResponse {
+            allowed_room_ids: room_ids,
+            allowed_zone_ids: zone_ids,
+        }))
         let zone_rows = sqlx::query("SELECT zone_id FROM access_rules_zones WHERE user_id = $1")
             .bind(req.id)
             .fetch_all(&self.pool)
@@ -571,6 +873,39 @@ impl Gatekeeper for GatewayService {
                 return Ok(Response::new(response));
             }
         };
+        let mut response = AccessCheckResponse {
+            granted: false,
+            user_name: "Unknown".into(),
+            message: String::new(),
+            face_detected: false,
+            face_live: false,
+            face_liveness_score: 0.0,
+            face_distance: 1.0,
+            face_match: false,
+            voice_provided: !req.audio.is_empty(),
+            voice_detected: false,
+            voice_distance: 1.0,
+            voice_match: false,
+            final_confidence: 0.0,
+            decision_stage: "start".into(),
+        };
+
+        // 1) Face + liveness
+        let face_res_opt = match self.process_face_full(&req.image).await {
+            Ok(v) => v,
+            Err(e) => {
+                response.message = format!("Vision backend error: {}", e.message());
+                response.decision_stage = "vision_error".into();
+                self.log_access(
+                    None,
+                    device_id,
+                    false,
+                    &format!("DENIED [VisionError] {}", response.message),
+                )
+                .await;
+                return Ok(Response::new(response));
+            }
+        };
         let face_info = match face_res_opt {
             Some(info) => info,
             None => {
@@ -585,7 +920,19 @@ impl Gatekeeper for GatewayService {
         response.face_detected = true;
         response.face_live = face_info.is_live;
         response.face_liveness_score = face_info.liveness_score;
+                response.message = "No face detected".into();
+                response.decision_stage = "face_detection".into();
+                self.log_access(None, device_id, false, "DENIED [Face] No face detected")
+                    .await;
+                return Ok(Response::new(response));
+            }
+        };
 
+        response.face_detected = true;
+        response.face_live = face_info.is_live;
+        response.face_liveness_score = face_info.liveness_score;
+
+        // 2) Face identification
         // 2) Face identification
         let user_match = sqlx::query(
             r#"
@@ -602,11 +949,13 @@ impl Gatekeeper for GatewayService {
         .map_err(|e| Status::internal(format!("DB Error: {}", e)))?;
 
         let (user_id, user_name, face_dist) = match user_match {
+        let (user_id, user_name, face_dist) = match user_match {
             Some(rec) => {
                 let d: f64 = rec.get::<Option<f64>, _>("distance").unwrap_or(1.0);
                 let uid: i32 = rec.get("id");
                 let uname: String = rec.get("name");
                 (uid, uname, d)
+            }
             }
             None => (0, "Unknown".to_string(), 1.0),
         };
@@ -714,12 +1063,21 @@ impl Gatekeeper for GatewayService {
             }
         }
 
+        let face_conf = (1.0 - response.face_distance).clamp(0.0, 1.0);
+        let voice_conf = if response.voice_provided {
+            (1.0 - response.voice_distance).clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+        response.final_confidence =
+            (0.4 * response.face_liveness_score + 0.35 * face_conf + 0.25 * voice_conf)
+                .clamp(0.0, 1.0);
+
         // 4) Access policy check
         if device_id == self.test_device_id {
             response.granted = true;
             response.message = "Welcome (Test Device)".into();
             response.decision_stage = "granted".into();
-            response.final_confidence = if response.voice_provided { 0.95 } else { 0.85 };
             self.log_access(
                 Some(user_id),
                 device_id,
@@ -732,6 +1090,7 @@ impl Gatekeeper for GatewayService {
 
         let zone_rec = sqlx::query(
             r#"
+            SELECT r.id as room_id, r.zone_id, z.name as zone_name, r.name as room_name
             SELECT r.id as room_id, r.zone_id, z.name as zone_name, r.name as room_name
             FROM devices d
             JOIN rooms r ON d.room_id = r.id
@@ -751,7 +1110,29 @@ impl Gatekeeper for GatewayService {
                 z.get::<String, _>("zone_name"),
                 z.get::<String, _>("room_name"),
             ),
+        let (room_id, zone_id, zone_name, room_name) = match zone_rec {
+            Some(z) => (
+                z.get::<i32, _>("room_id"),
+                z.get::<i32, _>("zone_id"),
+                z.get::<String, _>("zone_name"),
+                z.get::<String, _>("room_name"),
+            ),
             None => {
+                response.message = "Device not found/assigned".into();
+                response.decision_stage = "device_config".into();
+                self.log_access(
+                    Some(user_id),
+                    device_id,
+                    false,
+                    "DENIED [Config] device not assigned",
+                )
+                .await;
+                return Ok(Response::new(response));
+            }
+        };
+
+        let zone_rule_exists = sqlx::query(
+            "SELECT 1 as exists FROM access_rules_zones WHERE user_id = $1 AND zone_id = $2",
                 response.message = "Device not found/assigned".into();
                 response.decision_stage = "device_config".into();
                 self.log_access(
@@ -787,15 +1168,6 @@ impl Gatekeeper for GatewayService {
             response.granted = true;
             response.message = format!("Welcome to {} / {}", zone_name, room_name);
             response.decision_stage = "granted".into();
-            let face_conf = (1.0 - response.face_distance).clamp(0.0, 1.0);
-            let voice_conf = if response.voice_provided {
-                (1.0 - response.voice_distance).clamp(0.0, 1.0)
-            } else {
-                1.0
-            };
-            response.final_confidence =
-                (0.4 * response.face_liveness_score + 0.35 * face_conf + 0.25 * voice_conf)
-                    .clamp(0.0, 1.0);
             self.log_access(
                 Some(user_id),
                 device_id,
@@ -890,9 +1262,40 @@ impl Gatekeeper for GatewayService {
                 }
             })
             .collect();
+        let logs = rows
+            .into_iter()
+            .map(|row| {
+                let id: i32 = row.get("id");
+                let timestamp: String = row
+                    .get::<Option<chrono::DateTime<chrono::Utc>>, _>("created_at")
+                    .map(|t| t.to_rfc3339())
+                    .unwrap_or_default();
+                let user_name: String = row
+                    .get::<Option<String>, _>("user_name")
+                    .unwrap_or_else(|| "Unknown".to_string());
+                let room_name: String = row
+                    .get::<Option<String>, _>("room_name")
+                    .unwrap_or_default();
+                let zone_name: String = row
+                    .get::<Option<String>, _>("zone_name")
+                    .unwrap_or_default();
+                let access_granted: bool = row.get("granted");
+                let details: String = row.get::<Option<String>, _>("details").unwrap_or_default();
+                LogEntry {
+                    id,
+                    timestamp,
+                    user_name,
+                    room_name,
+                    zone_name,
+                    access_granted,
+                    details,
+                }
+            })
+            .collect();
 
         Ok(Response::new(GetLogsResponse { logs }))
     }
+
 
     async fn get_system_status(
         &self,
@@ -918,11 +1321,27 @@ impl Gatekeeper for GatewayService {
                 device: "Unknown".to_string(),
                 message: format!("Error: {}", e.message()),
             },
+            Ok(resp) => resp.into_inner(),
+            Err(e) => ServiceStatus {
+                online: false,
+                device: "Unknown".to_string(),
+                message: format!("Error: {}", e.message()),
+            },
         };
 
         Ok(Response::new(SystemStatusResponse {
             vision: Some(vision_status),
             audio: Some(audio_status),
+            database: Some(ServiceStatus {
+                online: true,
+                device: "Postgres".to_string(),
+                message: "Connected".to_string(),
+            }),
+            gateway: Some(ServiceStatus {
+                online: true,
+                device: "Local".to_string(),
+                message: "Running".to_string(),
+            }),
             database: Some(ServiceStatus {
                 online: true,
                 device: "Postgres".to_string(),
@@ -984,15 +1403,65 @@ impl Gatekeeper for GatewayService {
                 (true, "Gateway shutdown initiated".to_string())
             }
             _ => (false, format!("Service '{}' not recognized", service_name)),
+            _ => (false, format!("Service '{}' not recognized", service_name)),
         };
 
         Ok(Response::new(StatusResponse { success, message }))
+    }
+
+    async fn apply_runtime_mode(
+        &self,
+        request: Request<RuntimeModeRequest>,
+    ) -> Result<Response<RuntimeModeResponse>, Status> {
+        let req = request.into_inner();
+        let requested_mode = req.mode.to_lowercase();
+        if requested_mode != "cpu" && requested_mode != "gpu" && requested_mode != "auto" {
+            return Err(Status::invalid_argument("mode must be auto, cpu or gpu"));
+        }
+
+        let hw = Self::detect_hardware_profile();
+        let plan = Self::build_runtime_plan(&requested_mode, &hw);
+        Self::persist_runtime_mode(&plan).await?;
+
+        let provider = if plan.mode == "gpu" { "CUDA" } else { "CPU" };
+        let mut message = format!(
+            "Saved runtime mode '{}' using {} (vision_threads={}, audio_threads={}, cpu_cores={}, cpu_threads={}, gpu_available={})",
+            plan.mode,
+            provider,
+            plan.vision_threads,
+            plan.audio_threads,
+            hw.cpu_cores,
+            hw.cpu_threads,
+            hw.gpu_available
+        );
+
+        if req.restart_services {
+            match self.restart_stack().await {
+                Ok(_) => message.push_str(", services restarted"),
+                Err(e) => message.push_str(&format!(", restart skipped: {}", e.message())),
+            }
+        }
+
+        Ok(Response::new(RuntimeModeResponse {
+            success: true,
+            message,
+            saved_mode: plan.mode,
+            cpu_cores: hw.cpu_cores as i32,
+            cpu_threads: hw.cpu_threads as i32,
+            gpu_available: hw.gpu_available,
+            vision_threads: plan.vision_threads as i32,
+            audio_threads: plan.audio_threads as i32,
+        }))
     }
 
     async fn control_door(
         &self,
         _request: Request<ControlDoorRequest>,
     ) -> Result<Response<StatusResponse>, Status> {
+        Ok(Response::new(StatusResponse {
+            success: true,
+            message: "Command sent".to_string(),
+        }))
         Ok(Response::new(StatusResponse {
             success: true,
             message: "Command sent".to_string(),
@@ -1012,11 +1481,28 @@ impl Gatekeeper for GatewayService {
             FROM devices d
             JOIN device_types dt ON dt.id = d.device_type_id
             "#,
+            r#"
+            SELECT d.id, d.room_id, d.name, dt.name AS device_type, d.connection_string
+            FROM devices d
+            JOIN device_types dt ON dt.id = d.device_type_id
+            "#,
         )
         .fetch_all(&self.pool)
         .await
         .map_err(|e| Status::internal(e.to_string()))?
         .into_iter()
+        .map(
+            |(id, room_id, name, device_type, connection_string)| Device {
+                id,
+                room_id,
+                name,
+                device_type,
+                connection_string,
+                is_active: true,
+            },
+        )
+        .collect();
+
         .map(
             |(id, room_id, name, device_type, connection_string)| Device {
                 id,
@@ -1056,12 +1542,39 @@ impl Gatekeeper for GatewayService {
             }
         }
 
+
         // Add default device if nothing is found at all
         if found_devices.is_empty() {
             found_devices.push(self.get_default_test_device().await);
         }
 
         Ok(Response::new(ScanHardwareResponse { found_devices }))
+    }
+}
+
+async fn auto_configure_runtime_on_start() {
+    let hw = GatewayService::detect_hardware_profile();
+    let plan = GatewayService::build_runtime_plan("auto", &hw);
+    match GatewayService::persist_runtime_mode(&plan).await {
+        Ok(_) => {
+            let provider = if plan.mode == "gpu" { "CUDA" } else { "CPU" };
+            tracing::info!(
+                "Runtime auto-configured on startup: mode={}, provider={}, cpu_cores={}, cpu_threads={}, vision_threads={}, audio_threads={}, gpu_available={}",
+                plan.mode,
+                provider,
+                hw.cpu_cores,
+                hw.cpu_threads,
+                plan.vision_threads,
+                plan.audio_threads,
+                hw.gpu_available
+            );
+        }
+        Err(e) => {
+            tracing::warn!(
+                "Failed to auto-configure runtime on startup: {}",
+                e.message()
+            );
+        }
     }
 }
 
@@ -1108,6 +1621,8 @@ async fn connect_db_with_retry(database_url: &str) -> Result<Pool<Postgres>, sql
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
 
+    auto_configure_runtime_on_start().await;
+
     let database_url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://user:password@localhost:5432/biometry_db".to_string());
 
@@ -1115,8 +1630,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tracing::error!("Could not connect to database after retries: {}", e);
         e
     })?;
+    let pool = connect_db_with_retry(&database_url).await.map_err(|e| {
+        tracing::error!("Could not connect to database after retries: {}", e);
+        e
+    })?;
 
     let addr = "0.0.0.0:50051".parse()?;
+
+    let audio_url =
+        std::env::var("AUDIO_URL").unwrap_or_else(|_| "http://127.0.0.1:50053".to_string());
+    let vision_url =
+        std::env::var("VISION_URL").unwrap_or_else(|_| "http://127.0.0.1:50052".to_string());
+
+    tracing::info!(
+        "Using backend endpoints: audio={}, vision={}",
+        audio_url,
+        vision_url
+    );
+
+    let audio_channel = tonic::transport::Endpoint::from_shared(audio_url.clone())?.connect_lazy();
+    let vision_channel =
+        tonic::transport::Endpoint::from_shared(vision_url.clone())?.connect_lazy();
 
     let audio_url =
         std::env::var("AUDIO_URL").unwrap_or_else(|_| "http://127.0.0.1:50053".to_string());
@@ -1143,13 +1677,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .parse::<f64>()
         .expect("VOICE_SIMILARITY_THRESHOLD must be a valid f64");
 
+    let voice_similarity_threshold = std::env::var("VOICE_SIMILARITY_THRESHOLD")
+        .unwrap_or_else(|_| "0.6".to_string())
+        .parse::<f64>()
+        .expect("VOICE_SIMILARITY_THRESHOLD must be a valid f64");
+
     let test_device_id = std::env::var("TEST_DEVICE_ID")
         .unwrap_or_else(|_| "9999".to_string())
         .parse::<i32>()
         .expect("TEST_DEVICE_ID must be a valid i32");
 
+
     let (shutdown_tx, mut shutdown_rx) = mpsc::channel(1);
 
+    let gateway = GatewayService::new(
+        pool,
+        audio_channel,
+        vision_channel,
+        face_similarity_threshold,
+        voice_similarity_threshold,
+        test_device_id,
+        shutdown_tx,
+    );
     let gateway = GatewayService::new(
         pool,
         audio_channel,
@@ -1172,3 +1721,4 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     Ok(())
 }
+
