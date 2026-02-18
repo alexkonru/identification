@@ -1,5 +1,7 @@
 import os
 import subprocess
+import os
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -42,6 +44,7 @@ def set_dark_theme(app):
 # --- gRPC Client Wrapper ---
 class BiometryClient:
     def __init__(self, address='127.0.0.1:50051'):
+        self.address = address
         self.address = address
         self.channel = grpc.insecure_channel(address)
         self.stub = biometry_pb2_grpc.GatekeeperStub(self.channel)
@@ -92,8 +95,16 @@ class BiometryClient:
             except grpc.RpcError:
                 time.sleep(0.4)
         return []
+        # Gateway can be up slightly later than UI tabs initialization.
+        for _ in range(3):
+            try:
+                return self.stub.ListUsers(biometry_pb2.ListUsersRequest(), timeout=2.0).users
+            except grpc.RpcError:
+                time.sleep(0.4)
+        return []
 
     def register_user(self, name, image_bytes):
+        return self.stub.RegisterUser(biometry_pb2.RegisterUserRequest(name=name, images=[image_bytes], voices=[]))
         return self.stub.RegisterUser(biometry_pb2.RegisterUserRequest(name=name, images=[image_bytes], voices=[]))
 
     def remove_user(self, user_id):
@@ -134,6 +145,7 @@ class BiometryClient:
 
 
     def get_system_status(self):
+        return self.stub.GetSystemStatus(biometry_pb2.Empty(), timeout=3.0)
         return self.stub.GetSystemStatus(biometry_pb2.Empty(), timeout=3.0)
 
     def control_service(self, service, action):
@@ -325,6 +337,7 @@ class PersonnelTab(QWidget):
                 rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 h, w, ch = rgb.shape
                 img = QImage(rgb.data, w, h, ch*w, QImage.Format.Format_RGB888).copy()
+                img = QImage(rgb.data, w, h, ch*w, QImage.Format.Format_RGB888).copy()
                 self.video_label.setPixmap(QPixmap.fromImage(img).scaled(self.video_label.size(), Qt.AspectRatioMode.KeepAspectRatio))
 
     def refresh_users(self):
@@ -449,6 +462,7 @@ class AccessTab(QWidget):
         for u in self.client.list_users(): self.user_list.addItem(f"{u.id}: {u.name}")
     def load_user_rights(self, current, prev):
         if not current: return
+        self.rights_tree.clear(); uid = int(current.text().split(':')[0]); allowed = set(self.client.get_user_access(uid).allowed_room_ids)
         self.rights_tree.clear(); uid = int(current.text().split(':')[0]); allowed = set(self.client.get_user_access(uid).allowed_room_ids)
         zones = self.client.list_zones(); rooms = self.client.list_rooms(); z_map = {z.id: QTreeWidgetItem([z.name]) for z in zones}
         for r in rooms:
@@ -575,6 +589,23 @@ class MonitoringTab(QWidget):
         self.btn_reconnect.clicked.connect(self.reconnect_selected_camera)
         left.addWidget(self.btn_reconnect)
         left.addStretch()
+        layout = QHBoxLayout(self)
+
+        left = QVBoxLayout()
+        self.tree = QTreeWidget()
+        self.tree.setHeaderHidden(True)
+        self.tree.currentItemChanged.connect(self.on_select)
+        left.addWidget(QLabel("<b>Помещения и устройства:</b>"))
+        left.addWidget(self.tree)
+
+        self.btn_refresh = QPushButton("🔄 Обновить список инфраструктуры")
+        self.btn_refresh.clicked.connect(self.refresh_tree)
+        left.addWidget(self.btn_refresh)
+
+        self.btn_reconnect = QPushButton("🔌 Переподключить выбранную камеру")
+        self.btn_reconnect.clicked.connect(self.reconnect_selected_camera)
+        left.addWidget(self.btn_reconnect)
+        left.addStretch()
         layout.addLayout(left, 1)
 
         center = QVBoxLayout()
@@ -637,6 +668,11 @@ class MonitoringTab(QWidget):
             devices = self.client.list_devices()
             z_map = {z.id: QTreeWidgetItem([f"{z.name}"]) for z in zones}
             r_map = {}
+            zones = self.client.list_zones()
+            rooms = self.client.list_rooms()
+            devices = self.client.list_devices()
+            z_map = {z.id: QTreeWidgetItem([f"{z.name}"]) for z in zones}
+            r_map = {}
             for r in rooms:
                 room_item = QTreeWidgetItem([f"{r.name}"])
                 room_item.setData(0, Qt.ItemDataRole.UserRole, ("room", r.id))
@@ -656,6 +692,7 @@ class MonitoringTab(QWidget):
         except Exception as e:
             self.append_pipeline_log(f"[UI] refresh error: {e}")
 
+    def on_select(self, current, _prev=None):
     def on_select(self, current, _prev=None):
         self.stop_all_videos()
         if not current:
@@ -689,10 +726,15 @@ class MonitoringTab(QWidget):
         for t in self.active_cameras.values():
             t.stop()
             t.wait()
+        for t in self.active_cameras.values():
+            t.stop()
+            t.wait()
         self.active_cameras.clear()
 
     def restart_videos(self):
         item = self.tree.currentItem()
+        if item:
+            self.on_select(item)
         if item:
             self.on_select(item)
 
@@ -845,7 +887,17 @@ class VideoThread(QThread):
     frame_ready = pyqtSignal(QImage)
     status_msg = pyqtSignal(str)
 
+    status_msg = pyqtSignal(str)
+
     def __init__(self, source, dev_id):
+        super().__init__()
+        self.source = int(source) if str(source).isdigit() else source
+        self.dev_id = dev_id
+        self.running = True
+        self.overlay = ("", (0, 255, 0), 0)
+        self.mutex = QMutex()
+        self.current_frame = None
+
         super().__init__()
         self.source = int(source) if str(source).isdigit() else source
         self.dev_id = dev_id
@@ -860,9 +912,16 @@ class VideoThread(QThread):
             self.status_msg.emit(f"Не удалось открыть камеру: source={self.source}")
             return
 
+        if not cap.isOpened():
+            self.status_msg.emit(f"Не удалось открыть камеру: source={self.source}")
+            return
+
         while self.running:
             ret, frame = cap.read()
             if ret:
+                self.mutex.lock()
+                self.current_frame = frame.copy()
+                self.mutex.unlock()
                 self.mutex.lock()
                 self.current_frame = frame.copy()
                 self.mutex.unlock()
@@ -870,7 +929,17 @@ class VideoThread(QThread):
                     y0, dy = 50, 30
                     for i, line in enumerate(self.overlay[0].split('\n')):
                         cv2.putText(frame, line, (10, y0 + i * dy), cv2.FONT_HERSHEY_SIMPLEX, 0.7, self.overlay[1], 2)
+                    for i, line in enumerate(self.overlay[0].split('\n')):
+                        cv2.putText(frame, line, (10, y0 + i * dy), cv2.FONT_HERSHEY_SIMPLEX, 0.7, self.overlay[1], 2)
                     self.overlay = (self.overlay[0], self.overlay[1], self.overlay[2] - 1)
+
+                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                h, w, ch = rgb.shape
+                img = QImage(rgb.data, w, h, ch * w, QImage.Format.Format_RGB888).copy()
+                self.frame_ready.emit(img)
+            else:
+                self.status_msg.emit("Поток камеры недоступен")
+                self.msleep(200)
 
                 rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 h, w, ch = rgb.shape
@@ -888,7 +957,20 @@ class VideoThread(QThread):
     def set_overlay(self, text, color):
         self.overlay = (text, color, 60)
 
+
+    def stop(self):
+        self.running = False
+
+    def set_overlay(self, text, color):
+        self.overlay = (text, color, 60)
+
     def get_frame_bytes(self):
+        self.mutex.lock()
+        f = self.current_frame
+        self.mutex.unlock()
+        if f is not None:
+            _, enc = cv2.imencode('.jpg', f)
+            return enc.tobytes()
         self.mutex.lock()
         f = self.current_frame
         self.mutex.unlock()
@@ -905,6 +987,8 @@ class VideoThread(QThread):
 
 
 class AdminApp(QMainWindow):
+    def __init__(self, client):
+        super().__init__(); self.setWindowTitle("Biometry Admin Panel 2.0"); self.resize(1200, 800); self.client = client
     def __init__(self, client):
         super().__init__(); self.setWindowTitle("Biometry Admin Panel 2.0"); self.resize(1200, 800); self.client = client
         self.tabs = QTabWidget(); self.personnel_tab = PersonnelTab(self.client); self.monitor_tab = MonitoringTab(self.client)

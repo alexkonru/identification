@@ -2,6 +2,7 @@ services:
   db:
     image: pgvector/pgvector:pg16
     container_name: biometry-db
+    container_name: biometry-db
     ports:
       - "5432:5432"
     environment:
@@ -9,6 +10,7 @@ services:
       POSTGRES_PASSWORD: password
       POSTGRES_DB: biometry_db
     volumes:
+      - db-data:/var/lib/postgresql/data
       - db-data:/var/lib/postgresql/data
       - ./migrations:/docker-entrypoint-initdb.d
     healthcheck:
