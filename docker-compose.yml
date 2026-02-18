@@ -21,7 +21,7 @@ services:
     image: identification-rust-base:latest
     container_name: vision-worker
     working_dir: /workspace/identification
-    command: ["bash", "-lc", "cargo run -p vision-worker"]
+    command: ["bash", "-lc", "cargo run --release -p vision-worker"]
     cpuset: "0,1"
     ports:
       - "50052:50052"
@@ -58,7 +58,7 @@ services:
     image: identification-rust-base:latest
     container_name: audio-worker
     working_dir: /workspace/identification
-    command: ["bash", "-lc", "cargo run -p audio-worker"]
+    command: ["bash", "-lc", "cargo run --release -p audio-worker"]
     cpuset: "2,3"
     ports:
       - "50053:50053"
@@ -91,7 +91,7 @@ services:
     image: identification-rust-base:latest
     container_name: gateway-service
     working_dir: /workspace/identification
-    command: ["bash", "-lc", "cargo run -p gateway-service"]
+    command: ["bash", "-lc", "cargo run --release -p gateway-service"]
     ports:
       - "50051:50051"
     volumes:

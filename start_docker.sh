@@ -2,9 +2,7 @@
 set -euo pipefail
 
 # Запуск всей системы в Docker с поддержкой GPU.
-# По умолчанию оба worker запускаются в CPU-режиме (безопасно для слабых GPU).
-# Для GPU-режима выставьте перед запуском:
-#   VISION_FORCE_CPU=0 AUDIO_FORCE_CPU=0 AUDIO_USE_CUDA=1 ./start_docker.sh
+# По умолчанию оба worker запускаются в CPU-режиме.
 
 # Загружаем сохранённые runtime-настройки (если есть),
 # чтобы клиент мог централизованно менять режим запуска.
@@ -19,21 +17,17 @@ fi
 # Перед запуском проверяем, что Docker видит compose-плагин.
 docker compose version >/dev/null
 
-# Проверяем, что Docker Engine умеет выдавать GPU контейнерам.
-# Без nvidia-container-toolkit будет ошибка вида:
-# "could not select device driver \"\" with capabilities: [[gpu]]"
+# Проверяем, что Docker Engine умеет выдавать GPU контейнерам.\
 if ! docker run --rm --gpus all nvidia/cuda:12.6.0-base-ubuntu24.04 nvidia-smi >/dev/null 2>&1; then
   cat <<'MSG'
 [ERROR] Docker сейчас не может использовать GPU (NVIDIA runtime недоступен).
 
-Что нужно сделать на хосте (CachyOS/Arch):
+Что нужно сделать на хосте:
   1) Установить nvidia-container-toolkit.
   2) Настроить runtime для Docker и перезапустить docker.service.
   3) Проверить командой:
        docker run --rm --gpus all nvidia/cuda:12.6.0-base-ubuntu24.04 nvidia-smi
 
-После этого снова запусти:
-  ./start_docker.sh
 MSG
   exit 1
 fi
