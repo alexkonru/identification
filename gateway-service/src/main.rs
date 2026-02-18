@@ -177,7 +177,7 @@ impl GatewayService {
         }
     }
 
-    async fn persist_runtime_mode(&self, plan: &RuntimePlan) -> Result<(), Status> {
+    async fn persist_runtime_mode(plan: &RuntimePlan) -> Result<(), Status> {
         let root = std::env::var("RUNTIME_ROOT_DIR").unwrap_or_else(|_| ".".to_string());
         let env_path = PathBuf::from(root).join(".server_runtime.env");
         let content = format!(
@@ -1090,7 +1090,7 @@ impl Gatekeeper for GatewayService {
 
         let hw = Self::detect_hardware_profile();
         let plan = Self::build_runtime_plan(&requested_mode, &hw);
-        self.persist_runtime_mode(&plan).await?;
+        Self::persist_runtime_mode(&plan).await?;
 
         let provider = if plan.mode == "gpu" { "CUDA" } else { "CPU" };
         let mut message = format!(
@@ -1199,6 +1199,32 @@ impl Gatekeeper for GatewayService {
     }
 }
 
+async fn auto_configure_runtime_on_start() {
+    let hw = GatewayService::detect_hardware_profile();
+    let plan = GatewayService::build_runtime_plan("auto", &hw);
+    match GatewayService::persist_runtime_mode(&plan).await {
+        Ok(_) => {
+            let provider = if plan.mode == "gpu" { "CUDA" } else { "CPU" };
+            tracing::info!(
+                "Runtime auto-configured on startup: mode={}, provider={}, cpu_cores={}, cpu_threads={}, vision_threads={}, audio_threads={}, gpu_available={}",
+                plan.mode,
+                provider,
+                hw.cpu_cores,
+                hw.cpu_threads,
+                plan.vision_threads,
+                plan.audio_threads,
+                hw.gpu_available
+            );
+        }
+        Err(e) => {
+            tracing::warn!(
+                "Failed to auto-configure runtime on startup: {}",
+                e.message()
+            );
+        }
+    }
+}
+
 async fn connect_db_with_retry(database_url: &str) -> Result<Pool<Postgres>, sqlx::Error> {
     let max_attempts = std::env::var("DB_CONNECT_MAX_ATTEMPTS")
         .ok()
@@ -1241,6 +1267,8 @@ async fn connect_db_with_retry(database_url: &str) -> Result<Pool<Postgres>, sql
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
+
+    auto_configure_runtime_on_start().await;
 
     let database_url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://user:password@localhost:5432/biometry_db".to_string());

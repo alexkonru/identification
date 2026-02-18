@@ -144,11 +144,6 @@ class BiometryClient:
     def get_logs(self, limit=50, offset=0):
         return self.stub.GetLogs(biometry_pb2.GetLogsRequest(limit=limit, offset=offset)).logs
 
-    def apply_runtime_mode(self, restart_services: bool = True):
-        return self.stub.ApplyRuntimeMode(
-            biometry_pb2.RuntimeModeRequest(mode="auto", restart_services=restart_services),
-            timeout=20.0,
-        )
 
 # --- UI Components ---
 
@@ -160,7 +155,6 @@ class SystemTab(QWidget):
         self.timer = QTimer()
         self.timer.timeout.connect(self.refresh_status)
         self.timer.start(3000)
-        self.refresh_runtime_info()
 
     def init_ui(self):
         layout = QVBoxLayout(self)
@@ -214,15 +208,9 @@ class SystemTab(QWidget):
         rt_group = QGroupBox("Runtime настройки (CPU/GPU)")
         rt_layout = QFormLayout()
 
-        self.lbl_runtime_info = QLabel("Режим не применён")
+        self.lbl_runtime_info = QLabel("Ожидание статуса...")
         self.lbl_runtime_info.setWordWrap(True)
-
-        btn_apply_runtime = QPushButton("⚙️ Автооптимизация сервера")
-        btn_apply_runtime.setMaximumWidth(260)
-        btn_apply_runtime.clicked.connect(self.apply_runtime_settings)
-
         rt_layout.addRow("Текущий runtime:", self.lbl_runtime_info)
-        rt_layout.addRow(btn_apply_runtime)
         rt_group.setLayout(rt_layout)
         layout.addWidget(rt_group, 1)
 
@@ -237,25 +225,22 @@ class SystemTab(QWidget):
                 if not s_obj.online: lbl_s.setStyleSheet("color: red; font-weight: bold")
                 else: lbl_s.setStyleSheet("color: #00ff00; font-weight: bold")
             update("gateway", status.gateway); update("database", status.database); update("vision", status.vision); update("audio", status.audio)
+
+            cpu_threads = os.cpu_count() or 1
+            cpu_cores = max(1, cpu_threads // 2)
+            vision_device = (status.vision.device or "").upper()
+            audio_device = (status.audio.device or "").upper()
+            runtime_mode = "GPU" if ("CUDA" in vision_device or "CUDA" in audio_device) else "CPU"
+            self.lbl_runtime_info.setText(
+                f"Режим: {runtime_mode} | CPU: {cpu_cores} ядер / {cpu_threads} потоков | "
+                f"vision: {status.vision.device} ({status.vision.message}) | "
+                f"audio: {status.audio.device} ({status.audio.message})"
+            )
         except Exception as e:
             for k in self.status_widgets:
                 self.status_widgets[k][0].setText("🔴 Ошибка соединения")
                 self.status_widgets[k][2].setText(str(e))
 
-    def refresh_runtime_info(self):
-        try:
-            resp = self.client.apply_runtime_mode(restart_services=False)
-            details = (
-                f"{resp.saved_mode.upper()} | CPU: {resp.cpu_cores} ядер / {resp.cpu_threads} потоков | "
-                f"vision/audio потоки: {resp.vision_threads}/{resp.audio_threads}"
-            )
-            if resp.saved_mode.lower() == "gpu":
-                details += " | CUDA: включена"
-            else:
-                details += " | CUDA: отключена"
-            self.lbl_runtime_info.setText(details)
-        except Exception as e:
-            self.lbl_runtime_info.setText(f"Недоступно: {e}")
 
     def control_service(self, name, action):
         try: self.client.control_service(name, action); QMessageBox.information(self, "Результат", "Команда отправлена")
@@ -268,21 +253,6 @@ class SystemTab(QWidget):
             for d in devs: self.hw_list.addItem(f"Found: {d.name} ({d.device_type}) at {d.connection_string}")
         except Exception as e: QMessageBox.critical(self, "Ошибка", str(e))
 
-    def apply_runtime_settings(self):
-        try:
-            resp = self.client.apply_runtime_mode(restart_services=True)
-            details = (
-                f"{resp.saved_mode.upper()} | CPU: {resp.cpu_cores} ядер / {resp.cpu_threads} потоков | "
-                f"vision/audio потоки: {resp.vision_threads}/{resp.audio_threads}"
-            )
-            if resp.saved_mode.lower() == "gpu":
-                details += " | CUDA: включена"
-            else:
-                details += " | CUDA: отключена"
-            self.lbl_runtime_info.setText(details)
-            QMessageBox.information(self, "Runtime применён", f"{details}\n\n{resp.message}")
-        except Exception as e:
-            QMessageBox.critical(self, "Ошибка применения runtime", str(e))
 
 class PersonnelTab(QWidget):
     def __init__(self, client):
@@ -517,9 +487,9 @@ class HelpTab(QWidget):
         </ul>
         <p>Справа показывается короткий лог по этапам и итог (ДОСТУП/ОТКАЗ).</p>
 
-        <h3>⚙️ Режимы производительности</h3>
+        <h3>⚙️ Режим производительности</h3>
         <ul>
-            <li><b>Авто-режим:</b> сервер сам выбирает CPU/GPU и количество потоков под железо.</li>
+            <li><b>Автоматический:</b> сервер сам выбирает CPU/GPU и число потоков при старте.</li>
         </ul>
 
         <h3>🏗 Инфраструктура</h3>
