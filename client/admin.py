@@ -2,6 +2,7 @@ import os
 import subprocess
 import sys
 import time
+from pathlib import Path
 import cv2
 import grpc
 import numpy as np
@@ -10,7 +11,7 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QTabWidget, QListWidget, QLabel, QLineEdit, QPushButton,
     QGroupBox, QComboBox, QMessageBox, QInputDialog, QDialog, QFormLayout,
-    QTreeWidget, QTreeWidgetItem, QHeaderView, QSplitter, QCheckBox, QTableWidget, QTableWidgetItem,
+    QTreeWidget, QTreeWidgetItem, QTreeWidgetItemIterator, QHeaderView, QSplitter, QCheckBox, QTableWidget, QTableWidgetItem,
     QScrollArea, QTextEdit, QGridLayout
 )
 from PyQt6.QtGui import QImage, QPixmap, QPalette, QColor, QFont, QIcon
@@ -210,6 +211,7 @@ class SystemTab(QWidget):
 
         self.lbl_runtime_info = QLabel("Ожидание статуса...")
         self.lbl_runtime_info.setWordWrap(True)
+        self.lbl_runtime_info.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         rt_layout.addRow("Текущий runtime:", self.lbl_runtime_info)
         rt_group.setLayout(rt_layout)
         layout.addWidget(rt_group, 1)
@@ -226,15 +228,32 @@ class SystemTab(QWidget):
                 else: lbl_s.setStyleSheet("color: #00ff00; font-weight: bold")
             update("gateway", status.gateway); update("database", status.database); update("vision", status.vision); update("audio", status.audio)
 
-            cpu_threads = os.cpu_count() or 1
-            cpu_cores = max(1, cpu_threads // 2)
-            vision_device = (status.vision.device or "").upper()
-            audio_device = (status.audio.device or "").upper()
-            runtime_mode = "GPU" if ("CUDA" in vision_device or "CUDA" in audio_device) else "CPU"
+            runtime_file = Path(__file__).resolve().parents[1] / ".server_runtime.env"
+            runtime_cfg = {}
+            if runtime_file.exists():
+                for line in runtime_file.read_text(encoding="utf-8").splitlines():
+                    line = line.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    k, v = line.split("=", 1)
+                    runtime_cfg[k.strip()] = v.strip()
+
+            vision_threads = runtime_cfg.get("VISION_INTRA_THREADS", "-")
+            audio_threads = runtime_cfg.get("AUDIO_INTRA_THREADS", "-")
+            vision_cpu = runtime_cfg.get("VISION_FORCE_CPU", "?")
+            audio_cpu = runtime_cfg.get("AUDIO_FORCE_CPU", "?")
+            audio_cuda = runtime_cfg.get("AUDIO_USE_CUDA", "?")
+
+            vision_device = status.vision.device or "неизвестно"
+            audio_device = status.audio.device or "неизвестно"
+            mode = "GPU" if ("CUDA" in vision_device.upper() or "CUDA" in audio_device.upper() or audio_cuda == "1") else "CPU"
+
             self.lbl_runtime_info.setText(
-                f"Режим: {runtime_mode} | CPU: {cpu_cores} ядер / {cpu_threads} потоков | "
-                f"vision: {status.vision.device} ({status.vision.message}) | "
-                f"audio: {status.audio.device} ({status.audio.message})"
+                f"Выбранный режим: {mode}\n"
+                f"Vision worker: устройство={vision_device}, потоки={vision_threads}, FORCE_CPU={vision_cpu}\n"
+                f"Audio worker: устройство={audio_device}, потоки={audio_threads}, FORCE_CPU={audio_cpu}, USE_CUDA={audio_cuda}\n"
+                f"Vision статус: {status.vision.message}\n"
+                f"Audio статус: {status.audio.message}"
             )
         except Exception as e:
             for k in self.status_widgets:
@@ -514,6 +533,8 @@ class MonitoringTab(QWidget):
         self.last_presence_state = False
         self.pipeline_inflight = False
         self.pipeline_stage = "presence"
+        self.ident_cooldown_until = 0.0
+        self.await_presence_clear = False
         self.setup_ui()
 
     def setup_ui(self):
@@ -665,6 +686,8 @@ class MonitoringTab(QWidget):
         voice_present, audio_probe = self.detect_voice_presence()
 
         for dev_id, t in self.active_cameras.items():
+            if now < self.ident_cooldown_until:
+                continue
             frame_np = t.get_frame_copy()
             if frame_np is None:
                 continue
@@ -678,11 +701,14 @@ class MonitoringTab(QWidget):
                     if not self.last_presence_state:
                         self.append_pipeline_log("[PRESENCE] Обнаружено присутствие (лицо/голос).")
                     self.last_presence_state = True
+                    if self.await_presence_clear:
+                        continue
                     self.pipeline_stage = "liveness"
                 else:
                     if self.last_presence_state and (now - self.last_presence_ts) > 1.5:
                         self.append_pipeline_log("[PRESENCE] Нет человека у входа.")
                     self.last_presence_state = False
+                    self.await_presence_clear = False
                     continue
 
             if self.pipeline_inflight:
@@ -736,14 +762,18 @@ class MonitoringTab(QWidget):
 
                 self.pipeline_inflight = False
                 self.pipeline_stage = "presence"
+                self.await_presence_clear = True
+                self.ident_cooldown_until = time.time() + 2.0
 
                 msg = f"{access.user_name}: {'OK' if access.granted else 'NO'}\n{access.message}"
                 color = (0, 255, 0) if access.granted else (0, 0, 255)
                 t.set_overlay(msg, color)
 
+                details = getattr(access, "message", "")
                 self.append_pipeline_log(
                     f"[{dev_id}] {'ДОСТУП' if access.granted else 'ОТКАЗ'} | этап: идентификация | "
-                    f"уверенность: {getattr(access, 'final_confidence', 0.0):.2f} | пользователь: {access.user_name}"
+                    f"уверенность: {getattr(access, 'final_confidence', 0.0):.2f} | пользователь: {access.user_name} | "
+                    f"причина: {details}"
                 )
 
     def closeEvent(self, event):
