@@ -1,17 +1,12 @@
-<<<<<<< HEAD
 # Универсальный базовый образ:
 # - CUDA/cuDNN для GPU-ускорения,
 # - полноценное Linux-окружение для CPU-фолбэка,
 # - современная glibc (Ubuntu 24.04), чтобы избежать несовместимостей линковки.
 FROM nvidia/cuda:12.6.0-devel-ubuntu24.04
-=======
-FROM nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04
->>>>>>> master
 
 ENV DEBIAN_FRONTEND=noninteractive \
     RUSTUP_HOME=/usr/local/rustup \
     CARGO_HOME=/usr/local/cargo \
-<<<<<<< HEAD
     PATH=/usr/local/cargo/bin:${PATH} \
     # Для ort/ort-sys: скачивание официальных prebuilt-бинарников ONNX Runtime.
     ORT_STRATEGY=download
@@ -19,10 +14,6 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # Ставим инструменты сборки и runtime-зависимости:
 # - libopenblas-dev: быстрый CPU backend,
 # - libcudnn9-dev-cuda-12: заголовки/библиотеки cuDNN для CUDA-провайдера.
-=======
-    PATH=/usr/local/cargo/bin:${PATH}
-
->>>>>>> master
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
@@ -33,16 +24,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     protobuf-compiler \
     clang \
     cmake \
-<<<<<<< HEAD
     libopenblas-dev \
     libcudnn9-dev-cuda-12 \
     && rm -rf /var/lib/apt/lists/*
 
 # Установка Rust toolchain.
-=======
-    && rm -rf /var/lib/apt/lists/*
-
->>>>>>> master
 RUN curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal --default-toolchain stable
 
 WORKDIR /workspace/identification
