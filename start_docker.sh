@@ -6,14 +6,77 @@ set -euo pipefail
 # Для GPU-режима выставьте перед запуском:
 #   VISION_FORCE_CPU=0 AUDIO_FORCE_CPU=0 AUDIO_USE_CUDA=1 ./start_docker.sh
 
-# Загружаем сохранённые runtime-настройки (если есть),
-# чтобы клиент мог централизованно менять режим запуска.
+# Загружаем сохранённые runtime-настройки (если есть).
 RUNTIME_ENV_FILE="${RUNTIME_ENV_FILE:-.server_runtime.env}"
 if [ -f "$RUNTIME_ENV_FILE" ]; then
   set -a
   # shellcheck disable=SC1090
   source "$RUNTIME_ENV_FILE"
   set +a
+fi
+
+# Универсальная автонастройка CPU-параметров (не перетирает уже заданные значения).
+detect_physical_cores() {
+  local cores=""
+  if command -v lscpu >/dev/null 2>&1; then
+    cores="$(lscpu -p=CORE 2>/dev/null | grep -v '^#' | sort -u | wc -l | tr -d ' ')"
+  fi
+  if [ -z "$cores" ] || [ "$cores" -le 0 ] 2>/dev/null; then
+    local threads
+    threads="$(nproc --all 2>/dev/null || echo 4)"
+    cores=$(( threads / 2 ))
+    [ "$cores" -le 0 ] && cores=1
+  fi
+  echo "$cores"
+}
+
+PHYSICAL_CORES="$(detect_physical_cores)"
+VISION_AUTO_THREADS=$(( (PHYSICAL_CORES + 1) / 2 ))
+AUDIO_AUTO_THREADS=$(( PHYSICAL_CORES - VISION_AUTO_THREADS ))
+[ "$AUDIO_AUTO_THREADS" -le 0 ] && AUDIO_AUTO_THREADS=1
+
+export VISION_INTRA_THREADS="${VISION_INTRA_THREADS:-$VISION_AUTO_THREADS}"
+export AUDIO_INTRA_THREADS="${AUDIO_INTRA_THREADS:-$AUDIO_AUTO_THREADS}"
+export VISION_INTER_THREADS="${VISION_INTER_THREADS:-1}"
+export AUDIO_INTER_THREADS="${AUDIO_INTER_THREADS:-1}"
+export OPENBLAS_NUM_THREADS="${OPENBLAS_NUM_THREADS:-1}"
+
+build_cpuset() {
+  local start="$1"
+  local count="$2"
+  local end=$((start + count - 1))
+  if [ "$count" -le 1 ]; then
+    echo "$start"
+  else
+    echo "${start}-${end}"
+  fi
+}
+
+VISION_CORE_COUNT=$(( (PHYSICAL_CORES + 1) / 2 ))
+AUDIO_CORE_COUNT=$(( PHYSICAL_CORES - VISION_CORE_COUNT ))
+if [ "$PHYSICAL_CORES" -le 1 ]; then
+  VISION_CORE_COUNT=1
+  AUDIO_CORE_COUNT=1
+  export VISION_CPUSET="${VISION_CPUSET:-0}"
+  export AUDIO_CPUSET="${AUDIO_CPUSET:-0}"
+  export GATEWAY_CPUSET="${GATEWAY_CPUSET:-0}"
+else
+  [ "$AUDIO_CORE_COUNT" -le 0 ] && AUDIO_CORE_COUNT=1
+  export VISION_CPUSET="${VISION_CPUSET:-$(build_cpuset 0 $VISION_CORE_COUNT)}"
+  export AUDIO_CPUSET="${AUDIO_CPUSET:-$(build_cpuset $VISION_CORE_COUNT $AUDIO_CORE_COUNT)}"
+  export GATEWAY_CPUSET="${GATEWAY_CPUSET:-0-$((PHYSICAL_CORES-1))}"
+fi
+
+
+# Определяем доступность GPU только если пользователь явно не зафиксировал режим.
+if [ -z "${VISION_FORCE_CPU:-}" ]; then
+  export VISION_FORCE_CPU=1
+fi
+if [ -z "${AUDIO_FORCE_CPU:-}" ]; then
+  export AUDIO_FORCE_CPU=1
+fi
+if [ -z "${AUDIO_USE_CUDA:-}" ]; then
+  export AUDIO_USE_CUDA=0
 fi
 
 # Перед запуском проверяем, что Docker видит compose-плагин.

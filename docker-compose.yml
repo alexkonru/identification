@@ -21,7 +21,8 @@ services:
     image: identification-rust-base:latest
     container_name: vision-worker
     working_dir: /workspace/identification
-    command: ["bash", "-lc", "cargo run -p vision-worker"]
+    command: ["bash", "-lc", "cargo run --release -p vision-worker"]
+    cpuset: "${VISION_CPUSET:-0,1}"
     ports:
       - "50052:50052"
     volumes:
@@ -36,11 +37,17 @@ services:
       VISION_FORCE_CPU: "${VISION_FORCE_CPU:-1}"
       VISION_CUDA_DEVICE_ID: "${VISION_CUDA_DEVICE_ID:-}"
       VISION_CUDA_MEM_LIMIT_MB: "${VISION_CUDA_MEM_LIMIT_MB:-1024}"
-      VISION_INTRA_THREADS: "${VISION_INTRA_THREADS:-4}"
+      VISION_INTRA_THREADS: "${VISION_INTRA_THREADS:-2}"
+      VISION_INTER_THREADS: "${VISION_INTER_THREADS:-1}"
+      OPENBLAS_NUM_THREADS: "${OPENBLAS_NUM_THREADS:-1}"
       ORT_STRATEGY: "${ORT_STRATEGY:-download}"
       NVIDIA_VISIBLE_DEVICES: "${NVIDIA_VISIBLE_DEVICES:-all}"
       NVIDIA_DRIVER_CAPABILITIES: "${NVIDIA_DRIVER_CAPABILITIES:-compute,utility}"
     gpus: all
+    deploy:
+      resources:
+        limits:
+          cpus: "${VISION_CPU_LIMIT:-2.0}"
     depends_on:
       db:
         condition: service_healthy
@@ -49,7 +56,8 @@ services:
     image: identification-rust-base:latest
     container_name: audio-worker
     working_dir: /workspace/identification
-    command: ["bash", "-lc", "cargo run -p audio-worker"]
+    command: ["bash", "-lc", "cargo run --release -p audio-worker"]
+    cpuset: "${AUDIO_CPUSET:-2,3}"
     ports:
       - "50053:50053"
     volumes:
@@ -63,10 +71,16 @@ services:
       AUDIO_USE_CUDA: "${AUDIO_USE_CUDA:-0}"
       AUDIO_CUDA_MEM_LIMIT_MB: "${AUDIO_CUDA_MEM_LIMIT_MB:-256}"
       AUDIO_INTRA_THREADS: "${AUDIO_INTRA_THREADS:-2}"
+      AUDIO_INTER_THREADS: "${AUDIO_INTER_THREADS:-1}"
+      OPENBLAS_NUM_THREADS: "${OPENBLAS_NUM_THREADS:-1}"
       ORT_STRATEGY: "${ORT_STRATEGY:-download}"
       NVIDIA_VISIBLE_DEVICES: "${NVIDIA_VISIBLE_DEVICES:-all}"
       NVIDIA_DRIVER_CAPABILITIES: "${NVIDIA_DRIVER_CAPABILITIES:-compute,utility}"
     gpus: all
+    deploy:
+      resources:
+        limits:
+          cpus: "${AUDIO_CPU_LIMIT:-2.0}"
     depends_on:
       db:
         condition: service_healthy
@@ -75,7 +89,8 @@ services:
     image: identification-rust-base:latest
     container_name: gateway-service
     working_dir: /workspace/identification
-    command: ["bash", "-lc", "cargo run -p gateway-service"]
+    command: ["bash", "-lc", "cargo run --release -p gateway-service"]
+    cpuset: "${GATEWAY_CPUSET:-0-3}"
     ports:
       - "50051:50051"
     volumes:

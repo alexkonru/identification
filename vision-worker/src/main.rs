@@ -86,11 +86,14 @@ fn build_cuda_builder(device_id: i32) -> Result<SessionBuilder> {
         .with_conv_max_workspace(false)
         .with_arena_extend_strategy(ort::execution_providers::ArenaExtendStrategy::SameAsRequested);
 
-    let intra_threads = env_usize("VISION_INTRA_THREADS").unwrap_or(4);
+    let intra_threads = env_usize("VISION_INTRA_THREADS").unwrap_or(2);
 
     Session::builder()?
         .with_optimization_level(GraphOptimizationLevel::Level3)?
         .with_intra_threads(intra_threads)?
+        .with_inter_threads(env_usize("VISION_INTER_THREADS").unwrap_or(1))?
+        .with_parallel_execution(true)?
+        .with_config_entry("session.intra_op.allow_spinning", "1")?
         .with_execution_providers([cuda.build().error_on_failure()])?
         .with_log_level(ort::logging::LogLevel::Warning)
         .context("Failed to create session builder with CUDA execution provider")
@@ -244,8 +247,8 @@ struct ModelStore {
 
 impl ModelStore {
     fn new(models_dir: &str) -> Result<Self> {
-        let arcface_name = std::env::var("VISION_MODEL_ARCFACE")
-            .unwrap_or_else(|_| "arcface.onnx".to_string());
+        let arcface_name =
+            std::env::var("VISION_MODEL_ARCFACE").unwrap_or_else(|_| "arcface.onnx".to_string());
         let liveness_name = std::env::var("VISION_MODEL_LIVENESS")
             .unwrap_or_else(|_| "MiniFASNetV2.onnx".to_string());
         let yunet_name = std::env::var("VISION_MODEL_YUNET")
@@ -376,10 +379,14 @@ impl ModelStore {
         arc_path: &Path,
         live_path: &Path,
     ) -> Result<(Session, Session, Session, String)> {
-        let intra_threads = env_usize("VISION_INTRA_THREADS").unwrap_or(4);
+        let intra_threads = env_usize("VISION_INTRA_THREADS").unwrap_or(2);
+        let inter_threads = env_usize("VISION_INTER_THREADS").unwrap_or(1);
         let builder_cpu = Session::builder()?
             .with_optimization_level(GraphOptimizationLevel::Level3)?
-            .with_intra_threads(intra_threads)?;
+            .with_intra_threads(intra_threads)?
+            .with_inter_threads(inter_threads)?
+            .with_parallel_execution(true)?
+            .with_config_entry("session.intra_op.allow_spinning", "1")?;
 
         let sessions = Self::try_load(&builder_cpu, yunet_path, arc_path, live_path)
             .context("Не удалось загрузить модели даже на CPU")?;
@@ -392,8 +399,8 @@ impl ModelStore {
             return Ok(());
         }
 
-        let arcface_name = std::env::var("VISION_MODEL_ARCFACE")
-            .unwrap_or_else(|_| "arcface.onnx".to_string());
+        let arcface_name =
+            std::env::var("VISION_MODEL_ARCFACE").unwrap_or_else(|_| "arcface.onnx".to_string());
         let liveness_name = std::env::var("VISION_MODEL_LIVENESS")
             .unwrap_or_else(|_| "MiniFASNetV2.onnx".to_string());
         let yunet_name = std::env::var("VISION_MODEL_YUNET")

@@ -156,21 +156,35 @@ impl GatewayService {
         }
     }
 
+    fn env_threads_or_default(var: &str, default_value: usize) -> usize {
+        std::env::var(var)
+            .ok()
+            .and_then(|v| v.trim().parse::<usize>().ok())
+            .unwrap_or(default_value)
+            .max(1)
+    }
+
     fn build_runtime_plan(mode: &str, hw: &HardwareProfile) -> RuntimePlan {
         let auto_gpu = mode == "auto" && hw.gpu_available;
+
+        let default_vision = ((hw.cpu_cores + 1) / 2).max(1);
+        let default_audio = (hw.cpu_cores.saturating_sub(default_vision)).max(1);
+        let vision_threads = Self::env_threads_or_default("VISION_INTRA_THREADS", default_vision);
+        let audio_threads = Self::env_threads_or_default("AUDIO_INTRA_THREADS", default_audio);
+
         if (mode == "gpu" || auto_gpu) && hw.gpu_available {
             RuntimePlan {
                 mode: "gpu".to_string(),
-                vision_threads: hw.cpu_threads.clamp(2, 8),
-                audio_threads: hw.cpu_cores.clamp(1, 4),
+                vision_threads,
+                audio_threads,
                 force_cpu: false,
                 use_cuda: true,
             }
         } else {
             RuntimePlan {
                 mode: "cpu".to_string(),
-                vision_threads: hw.cpu_threads.clamp(2, 8),
-                audio_threads: hw.cpu_cores.clamp(1, 4),
+                vision_threads,
+                audio_threads,
                 force_cpu: true,
                 use_cuda: false,
             }
@@ -181,13 +195,25 @@ impl GatewayService {
         let root = std::env::var("RUNTIME_ROOT_DIR").unwrap_or_else(|_| ".".to_string());
         let env_path = PathBuf::from(root).join(".server_runtime.env");
         let content = format!(
-            "# Saved by gateway ApplyRuntimeMode\nRUNTIME_MODE={}\nVISION_FORCE_CPU={}\nAUDIO_FORCE_CPU={}\nAUDIO_USE_CUDA={}\nVISION_CUDA_MEM_LIMIT_MB=1024\nAUDIO_CUDA_MEM_LIMIT_MB=256\nVISION_INTRA_THREADS={}\nAUDIO_INTRA_THREADS={}\n",
+            "# Saved by gateway ApplyRuntimeMode\nRUNTIME_MODE={}\nVISION_FORCE_CPU={}\nAUDIO_FORCE_CPU={}\nAUDIO_USE_CUDA={}\nVISION_CUDA_MEM_LIMIT_MB=1024\nAUDIO_CUDA_MEM_LIMIT_MB=256\nVISION_INTRA_THREADS={}\nAUDIO_INTRA_THREADS={}\nVISION_INTER_THREADS={}\nAUDIO_INTER_THREADS={}\nOPENBLAS_NUM_THREADS={}\n",
             plan.mode,
             if plan.force_cpu { 1 } else { 0 },
             if plan.force_cpu { 1 } else { 0 },
             if plan.use_cuda { 1 } else { 0 },
             plan.vision_threads,
             plan.audio_threads,
+            std::env::var("VISION_INTER_THREADS")
+                .ok()
+                .and_then(|v| v.parse::<usize>().ok())
+                .unwrap_or(1),
+            std::env::var("AUDIO_INTER_THREADS")
+                .ok()
+                .and_then(|v| v.parse::<usize>().ok())
+                .unwrap_or(1),
+            std::env::var("OPENBLAS_NUM_THREADS")
+                .ok()
+                .and_then(|v| v.parse::<usize>().ok())
+                .unwrap_or(1),
         );
         tokio::fs::write(env_path, content)
             .await

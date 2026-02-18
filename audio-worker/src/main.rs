@@ -47,10 +47,14 @@ fn build_cuda_audio_builder() -> Result<ort::session::builder::SessionBuilder> {
         .with_arena_extend_strategy(ort::execution_providers::ArenaExtendStrategy::SameAsRequested);
 
     let intra_threads = env_usize("AUDIO_INTRA_THREADS").unwrap_or(2);
+    let inter_threads = env_usize("AUDIO_INTER_THREADS").unwrap_or(1);
 
     Session::builder()?
         .with_optimization_level(GraphOptimizationLevel::Level3)?
         .with_intra_threads(intra_threads)?
+        .with_inter_threads(inter_threads)?
+        .with_parallel_execution(true)?
+        .with_config_entry("session.intra_op.allow_spinning", "1")?
         .with_execution_providers([cuda.build().error_on_failure()])
         .context("Failed to create AUDIO CUDA session builder")
 }
@@ -181,10 +185,14 @@ impl ModelStore {
             }
         }
 
-        let intra_threads = env_usize("AUDIO_INTRA_THREADS").unwrap_or(4);
+        let intra_threads = env_usize("AUDIO_INTRA_THREADS").unwrap_or(2);
+        let inter_threads = env_usize("AUDIO_INTER_THREADS").unwrap_or(1);
         let builder_cpu = Session::builder()?
             .with_optimization_level(GraphOptimizationLevel::Level3)?
-            .with_intra_threads(intra_threads)?;
+            .with_intra_threads(intra_threads)?
+            .with_inter_threads(inter_threads)?
+            .with_parallel_execution(true)?
+            .with_config_entry("session.intra_op.allow_spinning", "1")?;
         let (aasist, ecapa) =
             load_with_builder(&builder_cpu).context("Failed to load audio models on CPU")?;
 
