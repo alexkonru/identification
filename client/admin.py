@@ -2,7 +2,6 @@ import os
 import subprocess
 import sys
 import time
-from pathlib import Path
 import cv2
 import grpc
 import numpy as np
@@ -129,94 +128,6 @@ class BiometryClient:
     def get_user_access(self, user_id):
         return self.stub.GetUserAccess(biometry_pb2.IdRequest(id=user_id))
 
-    def run_identification_pipeline(self, device_id, image_bytes, audio_bytes=None, sample_rate=16000):
-        details = []
-        vision_ok = False
-        audio_ok = None
-
-        try:
-            face = self.vision_stub.ProcessFace(biometry_pb2.ImageFrame(content=image_bytes))
-            vision_ok = face.detected and face.is_live
-            details.append(
-                f"[VISION] detected={face.detected}, live={face.is_live}, "
-                f"score={face.liveness_score:.3f}, provider={face.execution_provider or '-'}"
-            )
-            if face.error_msg:
-                details.append(f"[VISION] error={face.error_msg}")
-        except grpc.RpcError as e:
-            details.append(f"[VISION] RPC ERROR: {e.code().name} {e.details()}")
-
-        if audio_bytes:
-            try:
-                voice = self.audio_stub.ProcessVoice(
-                    biometry_pb2.AudioChunk(content=audio_bytes, sample_rate=sample_rate)
-                )
-                audio_ok = voice.detected
-                details.append(
-                    f"[AUDIO] detected={voice.detected}, emb_len={len(voice.embedding)}, "
-                    f"provider={voice.execution_provider or '-'}"
-                )
-                if voice.error_msg:
-                    details.append(f"[AUDIO] error={voice.error_msg}")
-            except grpc.RpcError as e:
-                audio_ok = False
-                details.append(f"[AUDIO] RPC ERROR: {e.code().name} {e.details()}")
-        else:
-            details.append("[AUDIO] skipped")
-
-        try:
-            req_kwargs = {"device_id": device_id, "image": image_bytes}
-            req_fields = getattr(biometry_pb2.CheckAccessRequest, "DESCRIPTOR", None)
-            field_map = req_fields.fields_by_name if req_fields else {}
-            if "audio" in field_map:
-                req_kwargs["audio"] = audio_bytes or b""
-            if "audio_sample_rate" in field_map:
-                req_kwargs["audio_sample_rate"] = sample_rate
-            access = self.stub.CheckAccess(biometry_pb2.CheckAccessRequest(**req_kwargs))
-            stage = getattr(access, "decision_stage", "decision")
-            face_live = getattr(access, "face_live", False)
-            face_liveness_score = getattr(access, "face_liveness_score", 0.0)
-            face_distance = getattr(access, "face_distance", 1.0)
-            voice_distance = getattr(access, "voice_distance", 1.0)
-            final_confidence = getattr(access, "final_confidence", 0.0)
-
-            details.append(
-                f"[DECISION] stage={stage}, granted={access.granted}, user={access.user_name}, msg={access.message}"
-            )
-            details.append(
-                f"[CONF] face_live={face_live}({face_liveness_score:.3f}) "
-                f"face_dist={face_distance:.3f}, voice_dist={voice_distance:.3f}, final={final_confidence:.3f}"
-            )
-            return {
-                "ok": True,
-                "granted": access.granted,
-                "user_name": access.user_name,
-                "message": access.message,
-                "vision_ok": vision_ok,
-                "audio_ok": audio_ok,
-                "details": details,
-                "stage": stage,
-                "face_score": face_liveness_score,
-                "face_distance": face_distance,
-                "voice_distance": voice_distance,
-                "final_confidence": final_confidence,
-            }
-        except grpc.RpcError as e:
-            details.append(f"[GATEWAY] RPC ERROR: {e.code().name} {e.details()}")
-            return {
-                "ok": False,
-                "granted": False,
-                "user_name": "-",
-                "message": e.details(),
-                "vision_ok": vision_ok,
-                "audio_ok": audio_ok,
-                "details": details,
-                "stage": "gateway_error",
-                "face_score": 0.0,
-                "face_distance": 1.0,
-                "voice_distance": 1.0,
-                "final_confidence": 0.0,
-            }
 
     def get_system_status(self):
         return self.stub.GetSystemStatus(biometry_pb2.Empty(), timeout=3.0)
@@ -233,47 +144,11 @@ class BiometryClient:
     def get_logs(self, limit=50, offset=0):
         return self.stub.GetLogs(biometry_pb2.GetLogsRequest(limit=limit, offset=offset)).logs
 
-    # --- Runtime config helpers ---
-    def _runtime_env_path(self):
-        return Path(__file__).resolve().parents[1] / ".server_runtime.env"
-
-    def list_available_models(self):
-        root = Path(__file__).resolve().parents[1]
-        vision_dir = root / "vision-worker" / "models"
-        audio_dir = root / "audio-worker" / "models"
-        return {
-            "vision": sorted([p.name for p in vision_dir.glob("*.onnx")]) if vision_dir.exists() else [],
-            "audio": sorted([p.name for p in audio_dir.glob("*.onnx")]) if audio_dir.exists() else [],
-        }
-
-    def save_runtime_settings(self, settings: dict):
-        env_path = self._runtime_env_path()
-        lines = [
-            "# Автосгенерировано клиентом admin.py",
-            "# Применяется скриптами start_all.sh / start_docker.sh",
-        ]
-        for k, v in settings.items():
-            lines.append(f"{k}={v}")
-        env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        return env_path
-
-    def apply_runtime_settings_and_restart(self, settings: dict):
-        env_path = self.save_runtime_settings(settings)
-
-        # Если docker-compose проект поднят — перезапускаем docker-стек.
-        use_docker = False
-        try:
-            out = subprocess.check_output(["docker", "compose", "ps"], text=True, stderr=subprocess.STDOUT)
-            use_docker = "gateway-service" in out or "vision-worker" in out or "audio-worker" in out
-        except Exception:
-            use_docker = False
-
-        if use_docker:
-            subprocess.check_call(["bash", "-lc", "./stop_docker.sh && ./start_docker.sh"])
-        else:
-            subprocess.check_call(["bash", "-lc", "./stop_all.sh && ./start_all.sh"])
-
-        return env_path, ("docker" if use_docker else "local")
+    def apply_runtime_mode(self, mode: str, restart_services: bool = True):
+        return self.stub.ApplyRuntimeMode(
+            biometry_pb2.RuntimeModeRequest(mode=mode, restart_services=restart_services),
+            timeout=15.0,
+        )
 
 # --- UI Components ---
 
@@ -340,12 +215,12 @@ class SystemTab(QWidget):
 
         self.cmb_runtime_mode = QComboBox()
         self.cmb_runtime_mode.addItems([
-            "CPU - ЭКО (минимальная нагрузка)",
-            "CPU - Баланс (рекомендуется)",
-            "GPU CUDA (если совместимо)",
+            "CPU (автооптимизация по железу)",
+            "GPU (если доступна CUDA)",
         ])
 
-        btn_apply_runtime = QPushButton("💾 Применить и перезапустить сервер")
+        btn_apply_runtime = QPushButton("💾 Применить режим")
+        btn_apply_runtime.setMaximumWidth(240)
         btn_apply_runtime.clicked.connect(self.apply_runtime_settings)
 
         rt_layout.addRow("Режим выполнения:", self.cmb_runtime_mode)
@@ -382,36 +257,16 @@ class SystemTab(QWidget):
 
     def apply_runtime_settings(self):
         try:
-            mode_idx = self.cmb_runtime_mode.currentIndex()
-            use_gpu = mode_idx == 2
-
-            if mode_idx == 0:  # cpu eco
-                vision_threads = "2"
-                audio_threads = "1"
-            elif mode_idx == 1:  # cpu balance
-                vision_threads = "4"
-                audio_threads = "2"
-            else:  # gpu
-                vision_threads = "4"
-                audio_threads = "2"
-
-            settings = {
-                "VISION_FORCE_CPU": "0" if use_gpu else "1",
-                "AUDIO_FORCE_CPU": "0" if use_gpu else "1",
-                "AUDIO_USE_CUDA": "1" if use_gpu else "0",
-                "VISION_CUDA_MEM_LIMIT_MB": "1024",
-                "AUDIO_CUDA_MEM_LIMIT_MB": "256",
-                "VISION_INTRA_THREADS": vision_threads,
-                "AUDIO_INTRA_THREADS": audio_threads,
-            }
-
-            env_path, mode = self.client.apply_runtime_settings_and_restart(settings)
+            mode = "gpu" if self.cmb_runtime_mode.currentIndex() == 1 else "cpu"
+            resp = self.client.apply_runtime_mode(mode, restart_services=True)
             QMessageBox.information(
                 self,
-                "Runtime обновлён",
-                f"Настройки сохранены в:\n{env_path}\n\n"
-                f"Режим перезапуска: {mode}\n"
-                "Сервисы будут работать с новыми параметрами запуска.",
+                "Режим применён",
+                f"Режим: {resp.saved_mode.upper()}\n"
+                f"CPU: {resp.cpu_cores} ядер / {resp.cpu_threads} потоков\n"
+                f"GPU доступна: {'да' if resp.gpu_available else 'нет'}\n"
+                f"Потоки vision/audio: {resp.vision_threads}/{resp.audio_threads}\n"
+                f"{resp.message}",
             )
         except Exception as e:
             QMessageBox.critical(self, "Ошибка применения runtime", str(e))
@@ -651,9 +506,8 @@ class HelpTab(QWidget):
 
         <h3>⚙️ Режимы производительности</h3>
         <ul>
-            <li><b>CPU ЭКО:</b> минимальная нагрузка, максимум стабильности.</li>
-            <li><b>CPU Баланс:</b> рекомендуемый режим.</li>
-            <li><b>GPU CUDA:</b> только при совместимой NVIDIA + драйвере/runtime.</li>
+            <li><b>CPU:</b> автооптимизация по количеству ядер/потоков на сервере.</li>
+            <li><b>GPU:</b> включается только если сервер видит CUDA-устройство.</li>
         </ul>
 
         <h3>🏗 Инфраструктура</h3>
@@ -675,9 +529,9 @@ class MonitoringTab(QWidget):
         )
         self.last_presence_ts = 0.0
         self.last_pipeline_ts = 0.0
-        self.last_live_ok_ts = 0.0
         self.last_presence_state = False
         self.pipeline_inflight = False
+        self.pipeline_stage = "presence"
         self.setup_ui()
 
     def setup_ui(self):
@@ -820,8 +674,8 @@ class MonitoringTab(QWidget):
             self.on_select(item)
 
     def process_active_mode(self):
-        # Always active pipeline with cheap presence detection first:
-        # 1) person/voice presence, 2) liveness, 3) identification.
+        # Последовательный пайплайн:
+        # 1) Дешёвое присутствие -> 2) только liveness -> 3) только идентификация
         if not self.active_cameras:
             return
 
@@ -836,63 +690,78 @@ class MonitoringTab(QWidget):
             person_present = self.detect_person_in_frame(frame_np)
             present = person_present or voice_present
 
-            if present:
-                self.last_presence_ts = now
-                if not self.last_presence_state:
-                    self.append_pipeline_log("[PRESENCE] Обнаружено присутствие (лицо/голос).")
-            else:
-                if self.last_presence_state and (now - self.last_presence_ts) > 1.5:
-                    self.append_pipeline_log("[PRESENCE] Нет человека у входа — heavy pipeline приостановлен.")
-                self.last_presence_state = False
+            if self.pipeline_stage == "presence":
+                if present:
+                    self.last_presence_ts = now
+                    if not self.last_presence_state:
+                        self.append_pipeline_log("[PRESENCE] Обнаружено присутствие (лицо/голос).")
+                    self.last_presence_state = True
+                    self.pipeline_stage = "liveness"
+                else:
+                    if self.last_presence_state and (now - self.last_presence_ts) > 1.5:
+                        self.append_pipeline_log("[PRESENCE] Нет человека у входа.")
+                    self.last_presence_state = False
+                    continue
+
+            if self.pipeline_inflight:
                 continue
-
-            self.last_presence_state = True
-
-            interval = 0.9 if (now - self.last_live_ok_ts) < 3.0 else 1.5
-            if self.pipeline_inflight or (now - self.last_pipeline_ts) < interval:
-                continue
-
-            self.last_pipeline_ts = now
-            self.pipeline_inflight = True
 
             ok, enc = cv2.imencode('.jpg', frame_np)
             if not ok:
-                self.pipeline_inflight = False
+                self.pipeline_stage = "presence"
                 continue
             frame = enc.tobytes()
 
-            # Если голос уже найден на шаге presence, используем его, иначе добираем небольшой фрагмент.
-            audio_bytes = audio_probe if voice_present else self.capture_audio_raw(duration_s=0.25, sample_rate=16000)
+            if self.pipeline_stage == "liveness":
+                self.pipeline_inflight = True
+                try:
+                    face = self.client.vision_stub.ProcessFace(biometry_pb2.ImageFrame(content=frame))
+                except Exception as e:
+                    self.pipeline_inflight = False
+                    self.pipeline_stage = "presence"
+                    self.append_pipeline_log(f"[LIVENESS] ошибка RPC: {e}")
+                    continue
 
-            try:
-                result = self.client.run_identification_pipeline(dev_id, frame, audio_bytes=audio_bytes)
-            except Exception as e:
                 self.pipeline_inflight = False
-                self.append_pipeline_log(f"[ПАЙПЛАЙН] ошибка: {e}")
+                live_ok = bool(face.detected and face.is_live)
+                self.append_pipeline_log(
+                    f"[LIVENESS] detected={face.detected}, live={face.is_live}, score={face.liveness_score:.3f}"
+                )
+
+                if live_ok:
+                    self.pipeline_stage = "identification"
+                else:
+                    self.pipeline_stage = "presence"
                 continue
 
-            self.pipeline_inflight = False
+            if self.pipeline_stage == "identification":
+                self.pipeline_inflight = True
+                audio_bytes = audio_probe if voice_present else self.capture_audio_raw(duration_s=0.25, sample_rate=16000)
+                try:
+                    req = biometry_pb2.CheckAccessRequest(
+                        device_id=dev_id,
+                        image=frame,
+                        audio=audio_bytes or b"",
+                        audio_sample_rate=16000,
+                    )
+                    access = self.client.stub.CheckAccess(req)
+                except Exception as e:
+                    self.pipeline_inflight = False
+                    self.pipeline_stage = "presence"
+                    self.append_pipeline_log(f"[IDENT] ошибка RPC: {e}")
+                    continue
 
-            msg = f"{result['user_name']}: {'OK' if result['granted'] else 'NO'}\n{result['message']}"
-            color = (0, 255, 0) if result['granted'] else (0, 0, 255)
-            t.set_overlay(msg, color)
+                self.pipeline_inflight = False
+                self.pipeline_stage = "presence"
 
-            if result.get("face_score", 0.0) >= 0.5:
-                self.last_live_ok_ts = time.time()
+                msg = f"{access.user_name}: {'OK' if access.granted else 'NO'}\n{access.message}"
+                color = (0, 255, 0) if access.granted else (0, 0, 255)
+                t.set_overlay(msg, color)
 
-            stage_map = {
-                "presence": "присутствие",
-                "liveness": "проверка живости",
-                "identification": "идентификация",
-                "policy": "проверка прав",
-                "decision": "решение",
-                "gateway_error": "ошибка шлюза",
-            }
-            stage = stage_map.get(result.get("stage", "decision"), result.get("stage", "decision"))
-            self.append_pipeline_log(
-                f"[{dev_id}] {'ДОСТУП' if result['granted'] else 'ОТКАЗ'} | этап: {stage} | "
-                f"уверенность: {result.get('final_confidence', 0.0):.2f} | пользователь: {result.get('user_name', '-') }"
-            )
+                self.append_pipeline_log(
+                    f"[{dev_id}] {'ДОСТУП' if access.granted else 'ОТКАЗ'} | этап: идентификация | "
+                    f"уверенность: {getattr(access, 'final_confidence', 0.0):.2f} | пользователь: {access.user_name}"
+                )
 
     def closeEvent(self, event):
         self.stop_all_videos()

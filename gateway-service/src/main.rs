@@ -7,11 +7,14 @@ use shared::biometry::{
     GetUserAccessResponse, GrantAccessRequest, IdRequest, IdResponse, ImageFrame,
     ListDevicesRequest, ListDevicesResponse, ListRoomsRequest, ListRoomsResponse, ListUsersRequest,
     ListUsersResponse, ListZonesRequest, ListZonesResponse, LogEntry, RegisterUserRequest, Room,
-    ScanHardwareResponse, ServiceStatus, SetAccessRulesRequest, StatusResponse,
-    SystemStatusResponse, User, Zone, audio_client::AudioClient, vision_client::VisionClient,
+    RuntimeModeRequest, RuntimeModeResponse, ScanHardwareResponse, ServiceStatus,
+    SetAccessRulesRequest, StatusResponse, SystemStatusResponse, User, Zone,
+    audio_client::AudioClient, vision_client::VisionClient,
 };
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{Pool, Postgres, Row};
+use std::path::PathBuf;
+use tokio::process::Command;
 use tokio::sync::mpsc;
 use tokio::time::{Duration, sleep};
 use tonic::{
@@ -25,6 +28,20 @@ struct FaceProcessResult {
     liveness_score: f32,
     is_live: bool,
     provider: String,
+}
+
+struct HardwareProfile {
+    cpu_cores: usize,
+    cpu_threads: usize,
+    gpu_available: bool,
+}
+
+struct RuntimePlan {
+    mode: String,
+    vision_threads: usize,
+    audio_threads: usize,
+    force_cpu: bool,
+    use_cuda: bool,
 }
 
 pub struct GatewayService {
@@ -123,6 +140,77 @@ impl GatewayService {
             device_type: "camera".to_string(),
             connection_string: "0".to_string(), // Webcam 0
             is_active: true,
+        }
+    }
+
+    fn detect_hardware_profile() -> HardwareProfile {
+        let cpu_threads = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1);
+        let cpu_cores = (cpu_threads / 2).max(1);
+        let gpu_available = PathBuf::from("/dev/nvidia0").exists();
+        HardwareProfile {
+            cpu_cores,
+            cpu_threads,
+            gpu_available,
+        }
+    }
+
+    fn build_runtime_plan(mode: &str, hw: &HardwareProfile) -> RuntimePlan {
+        if mode == "gpu" && hw.gpu_available {
+            RuntimePlan {
+                mode: "gpu".to_string(),
+                vision_threads: hw.cpu_threads.clamp(2, 8),
+                audio_threads: hw.cpu_cores.clamp(1, 4),
+                force_cpu: false,
+                use_cuda: true,
+            }
+        } else {
+            RuntimePlan {
+                mode: "cpu".to_string(),
+                vision_threads: hw.cpu_threads.clamp(2, 8),
+                audio_threads: hw.cpu_cores.clamp(1, 4),
+                force_cpu: true,
+                use_cuda: false,
+            }
+        }
+    }
+
+    async fn persist_runtime_mode(&self, plan: &RuntimePlan) -> Result<(), Status> {
+        let root = std::env::var("RUNTIME_ROOT_DIR").unwrap_or_else(|_| ".".to_string());
+        let env_path = PathBuf::from(root).join(".server_runtime.env");
+        let content = format!(
+            "# Saved by gateway ApplyRuntimeMode\nRUNTIME_MODE={}\nVISION_FORCE_CPU={}\nAUDIO_FORCE_CPU={}\nAUDIO_USE_CUDA={}\nVISION_CUDA_MEM_LIMIT_MB=1024\nAUDIO_CUDA_MEM_LIMIT_MB=256\nVISION_INTRA_THREADS={}\nAUDIO_INTRA_THREADS={}\n",
+            plan.mode,
+            if plan.force_cpu { 1 } else { 0 },
+            if plan.force_cpu { 1 } else { 0 },
+            if plan.use_cuda { 1 } else { 0 },
+            plan.vision_threads,
+            plan.audio_threads,
+        );
+        tokio::fs::write(env_path, content)
+            .await
+            .map_err(|e| Status::internal(format!("Failed to persist runtime mode: {}", e)))
+    }
+
+    async fn restart_stack(&self) -> Result<(), Status> {
+        let root = std::env::var("RUNTIME_ROOT_DIR").unwrap_or_else(|_| ".".to_string());
+        let cmd = "if [ -x ./stop_all.sh ] && [ -x ./start_all.sh ]; then ./stop_all.sh && ./start_all.sh; else exit 1; fi";
+        let output = Command::new("bash")
+            .arg("-lc")
+            .arg(cmd)
+            .current_dir(root)
+            .output()
+            .await
+            .map_err(|e| Status::internal(format!("Failed to execute restart scripts: {}", e)))?;
+
+        if output.status.success() {
+            Ok(())
+        } else {
+            Err(Status::internal(format!(
+                "Restart failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            )))
         }
     }
 }
@@ -987,6 +1075,44 @@ impl Gatekeeper for GatewayService {
         };
 
         Ok(Response::new(StatusResponse { success, message }))
+    }
+
+    async fn apply_runtime_mode(
+        &self,
+        request: Request<RuntimeModeRequest>,
+    ) -> Result<Response<RuntimeModeResponse>, Status> {
+        let req = request.into_inner();
+        let requested_mode = req.mode.to_lowercase();
+        if requested_mode != "cpu" && requested_mode != "gpu" {
+            return Err(Status::invalid_argument("mode must be cpu or gpu"));
+        }
+
+        let hw = Self::detect_hardware_profile();
+        let plan = Self::build_runtime_plan(&requested_mode, &hw);
+        self.persist_runtime_mode(&plan).await?;
+
+        let mut message = format!(
+            "Saved runtime mode '{}' (vision_threads={}, audio_threads={})",
+            plan.mode, plan.vision_threads, plan.audio_threads
+        );
+
+        if req.restart_services {
+            match self.restart_stack().await {
+                Ok(_) => message.push_str(", services restarted"),
+                Err(e) => message.push_str(&format!(", restart skipped: {}", e.message())),
+            }
+        }
+
+        Ok(Response::new(RuntimeModeResponse {
+            success: true,
+            message,
+            saved_mode: plan.mode,
+            cpu_cores: hw.cpu_cores as i32,
+            cpu_threads: hw.cpu_threads as i32,
+            gpu_available: hw.gpu_available,
+            vision_threads: plan.vision_threads as i32,
+            audio_threads: plan.audio_threads as i32,
+        }))
     }
 
     async fn control_door(
