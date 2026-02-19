@@ -2,6 +2,7 @@ import os
 import subprocess
 import sys
 import time
+import uuid
 from pathlib import Path
 import cv2
 import grpc
@@ -173,6 +174,26 @@ class BiometryClient:
         if "audio_sample_rate" in field_map:
             kwargs["audio_sample_rate"] = sample_rate
         return self.stub.CheckAccess(biometry_pb2.CheckAccessRequest(**kwargs))
+
+    def check_access_v2(self, session_id, device_id, frames, audio_bytes=None, sample_rate=16000, frame_timestamps_ms=None):
+        if not hasattr(self.stub, "CheckAccessV2"):
+            return None
+        req_cls = getattr(biometry_pb2, "CheckAccessRequestV2", None)
+        if req_cls is None:
+            return None
+        field_map = self._message_field_map(req_cls)
+        kwargs = {
+            "session_id": session_id,
+            "device_id": device_id,
+            "frames": frames,
+            "audio": audio_bytes or b"",
+            "audio_sample_rate": sample_rate,
+        }
+        if frame_timestamps_ms is None:
+            frame_timestamps_ms = []
+        if "frame_timestamps_ms" in field_map:
+            kwargs["frame_timestamps_ms"] = frame_timestamps_ms
+        return self.stub.CheckAccessV2(req_cls(**kwargs))
 
 
 # --- UI Components ---
@@ -785,12 +806,46 @@ class MonitoringTab(QWidget):
                 self.pipeline_inflight = True
                 audio_bytes = audio_probe if voice_present else self.capture_audio_raw(duration_s=0.25, sample_rate=16000)
                 try:
-                    access = self.client.check_access(
+                    clip_frames = [frame]
+                    clip_ts = [int(time.time() * 1000)]
+                    for _ in range(2):
+                        extra = t.get_frame_copy()
+                        if extra is None:
+                            continue
+                        ok_extra, enc_extra = cv2.imencode('.jpg', extra)
+                        if not ok_extra:
+                            continue
+                        clip_frames.append(enc_extra.tobytes())
+                        clip_ts.append(int(time.time() * 1000))
+
+                    session_id = f"ui-{dev_id}-{uuid.uuid4().hex[:8]}"
+                    access_v2 = self.client.check_access_v2(
+                        session_id=session_id,
                         device_id=dev_id,
-                        image_bytes=frame,
+                        frames=clip_frames,
                         audio_bytes=audio_bytes,
                         sample_rate=16000,
+                        frame_timestamps_ms=clip_ts,
                     )
+
+                    if access_v2 is not None:
+                        class AccessCompat:
+                            pass
+                        access = AccessCompat()
+                        access.user_name = getattr(access_v2, "user_name", "Unknown")
+                        access.granted = getattr(access_v2, "granted", False)
+                        access.message = getattr(access_v2, "reason", "")
+                        access.final_confidence = getattr(access_v2, "confidence", 0.0)
+                        self.append_pipeline_log(
+                            f"[IDENT] V2 stage={getattr(access_v2, 'stage', 0)} flags={list(getattr(access_v2, 'flags', []))}"
+                        )
+                    else:
+                        access = self.client.check_access(
+                            device_id=dev_id,
+                            image_bytes=frame,
+                            audio_bytes=audio_bytes,
+                            sample_rate=16000,
+                        )
                 except Exception as e:
                     self.pipeline_inflight = False
                     self.pipeline_stage = "presence"

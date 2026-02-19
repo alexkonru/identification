@@ -30,6 +30,13 @@ struct FaceProcessResult {
     provider: String,
 }
 
+struct ClipFrameAssessment {
+    index: usize,
+    detected: bool,
+    is_live: bool,
+    liveness_score: f32,
+}
+
 struct HardwareProfile {
     cpu_cores: usize,
     cpu_threads: usize,
@@ -173,6 +180,54 @@ impl GatewayService {
             "access_rules" | "device_config" => 6,
             _ => 8,
         }
+    }
+
+    async fn pick_best_clip_frame(&self, frames: &[Vec<u8>]) -> (usize, Vec<String>) {
+        let mut flags = Vec::new();
+        let mut best: Option<ClipFrameAssessment> = None;
+
+        for (index, frame) in frames.iter().enumerate() {
+            match self.process_face_full(frame).await {
+                Ok(Some(face)) => {
+                    let candidate = ClipFrameAssessment {
+                        index,
+                        detected: true,
+                        is_live: face.is_live,
+                        liveness_score: face.liveness_score,
+                    };
+                    best = match best {
+                        None => Some(candidate),
+                        Some(current_best) => {
+                            let current_score = (if current_best.detected { 1.0 } else { 0.0 })
+                                + (if current_best.is_live { 2.0 } else { 0.0 })
+                                + current_best.liveness_score;
+                            let next_score = (if candidate.detected { 1.0 } else { 0.0 })
+                                + (if candidate.is_live { 2.0 } else { 0.0 })
+                                + candidate.liveness_score;
+                            if next_score > current_score {
+                                Some(candidate)
+                            } else {
+                                Some(current_best)
+                            }
+                        }
+                    };
+                }
+                Ok(None) => {}
+                Err(err) => {
+                    tracing::warn!("clip frame {} face pre-check failed: {}", index, err);
+                    flags.push("frame_precheck_error".to_string());
+                }
+            }
+        }
+
+        let has_best = best.is_some();
+        let best_idx = best.as_ref().map(|f| f.index).unwrap_or(frames.len() / 2);
+        if !has_best {
+            flags.push("clip_no_face_precheck_fallback_middle_frame".to_string());
+        } else if frames.len() > 1 {
+            flags.push("clip_mode_best_frame_selected".to_string());
+        }
+        (best_idx, flags)
     }
 
     fn detect_hardware_profile() -> HardwareProfile {
@@ -1067,7 +1122,16 @@ impl Gatekeeper for GatewayService {
             }));
         }
 
-        let best_idx = req.frames.len() / 2;
+        let mut flags = Vec::new();
+        if !req.frame_timestamps_ms.is_empty() && req.frame_timestamps_ms.len() != req.frames.len()
+        {
+            flags.push("frame_timestamps_mismatch".to_string());
+        }
+
+        let (best_idx, mut clip_flags) = self.pick_best_clip_frame(&req.frames).await;
+        flags.append(&mut clip_flags);
+
+        let speech_present = !req.audio.is_empty();
         let legacy_req = CheckAccessRequest {
             device_id: req.device_id,
             image: req.frames[best_idx].clone(),
@@ -1079,10 +1143,6 @@ impl Gatekeeper for GatewayService {
             .await?
             .into_inner();
 
-        let mut flags = Vec::new();
-        if req.frames.len() > 1 {
-            flags.push("clip_mode_single_best_frame".to_string());
-        }
         let suspicious = legacy_resp.message.contains("suspicious_audio");
         if suspicious {
             flags.push("suspicious_audio".to_string());
@@ -1102,7 +1162,7 @@ impl Gatekeeper for GatewayService {
             face_distance: legacy_resp.face_distance,
             face_match: legacy_resp.face_match,
             voice_provided: legacy_resp.voice_provided,
-            speech_present: legacy_resp.voice_provided,
+            speech_present,
             voice_live_score: if legacy_resp.voice_detected { 1.0 } else { 0.0 },
             voice_live: legacy_resp.voice_detected,
             voice_distance: legacy_resp.voice_distance,
