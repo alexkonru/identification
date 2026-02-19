@@ -2,14 +2,14 @@ use glob::glob;
 use pgvector::Vector;
 use shared::biometry::gatekeeper_server::{Gatekeeper, GatekeeperServer};
 use shared::biometry::{
-    AccessCheckResponse, AddDeviceRequest, AddRoomRequest, AddZoneRequest, CheckAccessRequest,
-    ControlDoorRequest, ControlServiceRequest, Device, Empty, GetLogsRequest, GetLogsResponse,
-    GetUserAccessResponse, GrantAccessRequest, IdRequest, IdResponse, ImageFrame,
-    ListDevicesRequest, ListDevicesResponse, ListRoomsRequest, ListRoomsResponse, ListUsersRequest,
-    ListUsersResponse, ListZonesRequest, ListZonesResponse, LogEntry, RegisterUserRequest, Room,
-    RuntimeModeRequest, RuntimeModeResponse, ScanHardwareResponse, ServiceStatus,
-    SetAccessRulesRequest, StatusResponse, SystemStatusResponse, User, Zone,
-    audio_client::AudioClient, vision_client::VisionClient,
+    AccessCheckResponse, AccessCheckResponseV2, AddDeviceRequest, AddRoomRequest, AddZoneRequest,
+    CheckAccessRequest, CheckAccessRequestV2, ControlDoorRequest, ControlServiceRequest, Device,
+    Empty, GetLogsRequest, GetLogsResponse, GetUserAccessResponse, GrantAccessRequest, IdRequest,
+    IdResponse, ImageFrame, ListDevicesRequest, ListDevicesResponse, ListRoomsRequest,
+    ListRoomsResponse, ListUsersRequest, ListUsersResponse, ListZonesRequest, ListZonesResponse,
+    LogEntry, RegisterUserRequest, Room, RuntimeModeRequest, RuntimeModeResponse,
+    ScanHardwareResponse, ServiceStatus, SetAccessRulesRequest, StatusResponse,
+    SystemStatusResponse, User, Zone, audio_client::AudioClient, vision_client::VisionClient,
 };
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{Pool, Postgres, Row};
@@ -158,6 +158,20 @@ impl GatewayService {
             device_type: "camera".to_string(),
             connection_string: "0".to_string(), // Webcam 0
             is_active: true,
+        }
+    }
+
+    fn map_stage_to_v2(stage: &str, granted: bool) -> i32 {
+        if granted {
+            return 7; // ACCESS_STAGE_GRANTED
+        }
+        match stage {
+            "presence" | "face_detection" => 1,
+            "liveness" => 3,
+            "face_match" => 4,
+            "voice_detection" | "voice_match" | "audio_warning" | "audio_error" => 5,
+            "access_rules" | "device_config" => 6,
+            _ => 8,
         }
     }
 
@@ -1020,6 +1034,83 @@ impl Gatekeeper for GatewayService {
             .collect();
 
         Ok(Response::new(GetLogsResponse { logs }))
+    }
+
+    async fn check_access_v2(
+        &self,
+        request: Request<CheckAccessRequestV2>,
+    ) -> Result<Response<AccessCheckResponseV2>, Status> {
+        let req = request.into_inner();
+        if req.frames.is_empty() {
+            return Ok(Response::new(AccessCheckResponseV2 {
+                granted: false,
+                stage: 1,
+                reason: "No frames provided".to_string(),
+                confidence: 0.0,
+                user_id: 0,
+                user_name: "Unknown".to_string(),
+                face_detected: false,
+                face_quality: 0.0,
+                face_live_score: 0.0,
+                face_live: false,
+                face_distance: 1.0,
+                face_match: false,
+                voice_provided: !req.audio.is_empty(),
+                speech_present: !req.audio.is_empty(),
+                voice_live_score: 0.0,
+                voice_live: false,
+                voice_distance: 1.0,
+                voice_match: false,
+                suspicious_audio: false,
+                flags: vec!["no_frames".to_string()],
+                session_id: req.session_id,
+            }));
+        }
+
+        let best_idx = req.frames.len() / 2;
+        let legacy_req = CheckAccessRequest {
+            device_id: req.device_id,
+            image: req.frames[best_idx].clone(),
+            audio: req.audio,
+            audio_sample_rate: req.audio_sample_rate,
+        };
+        let legacy_resp = self
+            .check_access(Request::new(legacy_req))
+            .await?
+            .into_inner();
+
+        let mut flags = Vec::new();
+        if req.frames.len() > 1 {
+            flags.push("clip_mode_single_best_frame".to_string());
+        }
+        let suspicious = legacy_resp.message.contains("suspicious_audio");
+        if suspicious {
+            flags.push("suspicious_audio".to_string());
+        }
+
+        Ok(Response::new(AccessCheckResponseV2 {
+            granted: legacy_resp.granted,
+            stage: Self::map_stage_to_v2(&legacy_resp.decision_stage, legacy_resp.granted),
+            reason: legacy_resp.message,
+            confidence: legacy_resp.final_confidence,
+            user_id: 0,
+            user_name: legacy_resp.user_name,
+            face_detected: legacy_resp.face_detected,
+            face_quality: if legacy_resp.face_detected { 1.0 } else { 0.0 },
+            face_live_score: legacy_resp.face_liveness_score,
+            face_live: legacy_resp.face_live,
+            face_distance: legacy_resp.face_distance,
+            face_match: legacy_resp.face_match,
+            voice_provided: legacy_resp.voice_provided,
+            speech_present: legacy_resp.voice_provided,
+            voice_live_score: if legacy_resp.voice_detected { 1.0 } else { 0.0 },
+            voice_live: legacy_resp.voice_detected,
+            voice_distance: legacy_resp.voice_distance,
+            voice_match: legacy_resp.voice_match,
+            suspicious_audio: suspicious,
+            flags,
+            session_id: req.session_id,
+        }))
     }
 
     async fn get_system_status(

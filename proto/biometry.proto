@@ -26,6 +26,7 @@ service Gatekeeper {
   rpc GetUserAccess (IdRequest) returns (GetUserAccessResponse);
 
   rpc CheckAccess (CheckAccessRequest) returns (AccessCheckResponse);
+  rpc CheckAccessV2 (CheckAccessRequestV2) returns (AccessCheckResponseV2);
 
   // --- Управление системой и Оборудованием ---
   rpc GetSystemStatus (Empty) returns (SystemStatusResponse); 
@@ -178,6 +179,51 @@ message AccessCheckResponse {
   bool voice_match = 12;
   float final_confidence = 13;
   string decision_stage = 14;
+}
+
+enum AccessStage {
+  ACCESS_STAGE_UNKNOWN = 0;
+  ACCESS_STAGE_PRESENCE = 1;
+  ACCESS_STAGE_FACE_QUALITY = 2;
+  ACCESS_STAGE_FACE_LIVENESS = 3;
+  ACCESS_STAGE_FACE_MATCH = 4;
+  ACCESS_STAGE_VOICE_OPTIONAL = 5;
+  ACCESS_STAGE_POLICY = 6;
+  ACCESS_STAGE_GRANTED = 7;
+  ACCESS_STAGE_DENIED = 8;
+}
+
+message CheckAccessRequestV2 {
+  string session_id = 1;
+  int32 device_id = 2;
+  repeated bytes frames = 3;
+  bytes audio = 4;
+  uint32 audio_sample_rate = 5;
+  repeated int64 frame_timestamps_ms = 6;
+}
+
+message AccessCheckResponseV2 {
+  bool granted = 1;
+  AccessStage stage = 2;
+  string reason = 3;
+  float confidence = 4;
+  int32 user_id = 5;
+  string user_name = 6;
+  bool face_detected = 7;
+  float face_quality = 8;
+  float face_live_score = 9;
+  bool face_live = 10;
+  float face_distance = 11;
+  bool face_match = 12;
+  bool voice_provided = 13;
+  bool speech_present = 14;
+  float voice_live_score = 15;
+  bool voice_live = 16;
+  float voice_distance = 17;
+  bool voice_match = 18;
+  bool suspicious_audio = 19;
+  repeated string flags = 20;
+  string session_id = 21;
 }
 
 // Vision & Audio
