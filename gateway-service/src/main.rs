@@ -16,7 +16,7 @@ use sqlx::{Pool, Postgres, Row};
 use std::path::PathBuf;
 use tokio::process::Command;
 use tokio::sync::mpsc;
-use tokio::time::{Duration, sleep};
+use tokio::time::{Duration, sleep, timeout};
 use tonic::{
     Request, Response, Status,
     transport::{Channel, Server},
@@ -51,6 +51,8 @@ pub struct GatewayService {
     face_similarity_threshold: f64,
     voice_similarity_threshold: f64,
     test_device_id: i32,
+    vision_rpc_timeout: Duration,
+    audio_rpc_timeout: Duration,
     shutdown_tx: mpsc::Sender<()>,
 }
 
@@ -62,6 +64,8 @@ impl GatewayService {
         face_similarity_threshold: f64,
         voice_similarity_threshold: f64,
         test_device_id: i32,
+        vision_rpc_timeout: Duration,
+        audio_rpc_timeout: Duration,
         shutdown_tx: mpsc::Sender<()>,
     ) -> Self {
         Self {
@@ -71,6 +75,8 @@ impl GatewayService {
             face_similarity_threshold,
             voice_similarity_threshold,
             test_device_id,
+            vision_rpc_timeout,
+            audio_rpc_timeout,
             shutdown_tx,
         }
     }
@@ -82,21 +88,27 @@ impl GatewayService {
             content: image.to_vec(),
         });
 
-        match client.process_face(request).await {
-            Ok(response) => {
-                let res = response.into_inner();
-                if res.detected && !res.embedding.is_empty() {
-                    Ok(Some(FaceProcessResult {
-                        embedding: res.embedding,
-                        liveness_score: res.liveness_score,
-                        is_live: res.is_live,
-                        provider: res.execution_provider,
-                    }))
-                } else {
-                    Ok(None)
+        match timeout(self.vision_rpc_timeout, client.process_face(request)).await {
+            Err(_) => Err(Status::deadline_exceeded(format!(
+                "Vision service timeout after {} ms",
+                self.vision_rpc_timeout.as_millis()
+            ))),
+            Ok(result) => match result {
+                Ok(response) => {
+                    let res = response.into_inner();
+                    if res.detected && !res.embedding.is_empty() {
+                        Ok(Some(FaceProcessResult {
+                            embedding: res.embedding,
+                            liveness_score: res.liveness_score,
+                            is_live: res.is_live,
+                            provider: res.execution_provider,
+                        }))
+                    } else {
+                        Ok(None)
+                    }
                 }
-            }
-            Err(e) => Err(Status::internal(format!("Vision service error: {}", e))),
+                Err(e) => Err(Status::internal(format!("Vision service error: {}", e))),
+            },
         }
     }
 
@@ -107,16 +119,22 @@ impl GatewayService {
             sample_rate: 16000,
         });
 
-        match client.process_voice(request).await {
-            Ok(response) => {
-                let bio_result = response.into_inner();
-                if bio_result.detected && !bio_result.embedding.is_empty() {
-                    Ok(Some(bio_result.embedding))
-                } else {
-                    Ok(None)
+        match timeout(self.audio_rpc_timeout, client.process_voice(request)).await {
+            Err(_) => Err(Status::deadline_exceeded(format!(
+                "Audio service timeout after {} ms",
+                self.audio_rpc_timeout.as_millis()
+            ))),
+            Ok(result) => match result {
+                Ok(response) => {
+                    let bio_result = response.into_inner();
+                    if bio_result.detected && !bio_result.embedding.is_empty() {
+                        Ok(Some(bio_result.embedding))
+                    } else {
+                        Ok(None)
+                    }
                 }
-            }
-            Err(e) => Err(Status::internal(format!("Audio service error: {}", e))),
+                Err(e) => Err(Status::internal(format!("Audio service error: {}", e))),
+            },
         }
     }
 
@@ -1285,6 +1303,14 @@ async fn connect_db_with_retry(database_url: &str) -> Result<Pool<Postgres>, sql
     Err(last_err.expect("last database error should be set"))
 }
 
+fn env_duration_ms(name: &str, default_ms: u64) -> Duration {
+    let value = std::env::var(name)
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(default_ms);
+    Duration::from_millis(value)
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
@@ -1332,6 +1358,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .expect("TEST_DEVICE_ID must be a valid i32");
 
     let (shutdown_tx, mut shutdown_rx) = mpsc::channel(1);
+    let vision_rpc_timeout = env_duration_ms("VISION_RPC_TIMEOUT_MS", 1500);
+    let audio_rpc_timeout = env_duration_ms("AUDIO_RPC_TIMEOUT_MS", 2000);
 
     let gateway = GatewayService::new(
         pool,
@@ -1340,6 +1368,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         face_similarity_threshold,
         voice_similarity_threshold,
         test_device_id,
+        vision_rpc_timeout,
+        audio_rpc_timeout,
         shutdown_tx,
     );
 
