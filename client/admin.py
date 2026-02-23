@@ -12,11 +12,10 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QTabWidget, QListWidget, QLabel, QLineEdit, QPushButton,
     QGroupBox, QComboBox, QMessageBox, QInputDialog, QDialog, QFormLayout,
-    QTreeWidget, QTreeWidgetItem, QTreeWidgetItemIterator, QHeaderView, QSplitter, QCheckBox, QTableWidget, QTableWidgetItem,
-    QScrollArea, QTextEdit, QGridLayout
+    QTreeWidget, QTreeWidgetItem, QTreeWidgetItemIterator, QTableWidget, QTableWidgetItem, QTextEdit, QGridLayout
 )
-from PyQt6.QtGui import QImage, QPixmap, QPalette, QColor, QFont, QIcon
-from PyQt6.QtCore import Qt, QTimer, QSize, QThread, pyqtSignal, QMutex
+from PyQt6.QtGui import QImage, QPixmap, QPalette, QColor, QFont
+from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal, QMutex
 
 import biometry_pb2
 import biometry_pb2_grpc
@@ -66,11 +65,6 @@ class BiometryClient:
         self.audio_stub = biometry_pb2_grpc.AudioStub(self.audio_channel)
 
     def wait_until_ready(self, total_timeout=45.0, probe_timeout=2.0):
-        # Для Docker-старта gateway может подняться не мгновенно:
-        # контейнер уже существует, но gRPC сервис ещё инициализируется.
-        # Важно: GetSystemStatus внутри gateway опрашивает audio/vision workers,
-        # поэтому при их старте/недоступности этот RPC может таймаутить,
-        # даже если сам gateway уже доступен.
         deadline = time.time() + total_timeout
         while time.time() < deadline:
             try:

@@ -32,8 +32,6 @@ services:
       - target-cache-vision:/workspace/identification/target
     environment:
       RUST_LOG: "${RUST_LOG:-vision_worker=info,ort::logging=warn}"
-      # По умолчанию на слабых ноутбуках (MX230/Vega) безопаснее CPU.
-      # На мощной NVIDIA: VISION_FORCE_CPU=0
       VISION_FORCE_CPU: "${VISION_FORCE_CPU:-1}"
       VISION_CUDA_DEVICE_ID: "${VISION_CUDA_DEVICE_ID:-}"
       VISION_CUDA_MEM_LIMIT_MB: "${VISION_CUDA_MEM_LIMIT_MB:-1024}"

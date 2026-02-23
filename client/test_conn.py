@@ -8,7 +8,6 @@ def test_connection(address):
     try:
         channel = grpc.insecure_channel(address)
         stub = biometry_pb2_grpc.GatekeeperStub(channel)
-        # Try a simple call (SystemStatus is good)
         response = stub.GetSystemStatus(biometry_pb2.Empty())
         print("✅ Connection Successful!")
         print(f"Response object: {response}")
