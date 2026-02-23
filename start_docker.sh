@@ -1,86 +1,71 @@
 #!/bin/bash
 set -euo pipefail
 
-# Запуск всей системы в Docker с поддержкой GPU.
-# По умолчанию оба worker запускаются в CPU-режиме.
+# --- Настройки ---
+BASE_IMAGE="identification-rust-base:latest"
+RUNTIME_ENV_FILE=".server_runtime.env"
+export ORT_STRATEGY=download
 
-# Загружаем сохранённые runtime-настройки (если есть),
-# чтобы клиент мог централизованно менять режим запуска.
-RUNTIME_ENV_FILE="${RUNTIME_ENV_FILE:-.server_runtime.env}"
+echo "--- [1/4] Подготовка окружения ---"
 if [ -f "$RUNTIME_ENV_FILE" ]; then
-  set -a
-  # shellcheck disable=SC1090
-  source "$RUNTIME_ENV_FILE"
-  set +a
+    set -a
+    source "$RUNTIME_ENV_FILE"
+    set +a
+    echo "[INFO] Загружены настройки из $RUNTIME_ENV_FILE"
 fi
 
-# Перед запуском проверяем, что Docker видит compose-плагин.
-docker compose version >/dev/null
-
-# Проверяем, что Docker Engine умеет выдавать GPU контейнерам.\
-if ! docker run --rm --gpus all nvidia/cuda:12.6.0-base-ubuntu24.04 nvidia-smi >/dev/null 2>&1; then
-  cat <<'MSG'
-[ERROR] Docker сейчас не может использовать GPU (NVIDIA runtime недоступен).
-
-Что нужно сделать на хосте:
-  1) Установить nvidia-container-toolkit.
-  2) Настроить runtime для Docker и перезапустить docker.service.
-  3) Проверить командой:
-       docker run --rm --gpus all nvidia/cuda:12.6.0-base-ubuntu24.04 nvidia-smi
-
-MSG
-  exit 1
-fi
-
-# Собираем базовый образ один раз (без повторной сборки для каждого сервиса).
-# Предпочитаем buildx (BuildKit), при отсутствии fallback на обычный docker build.
-if docker buildx version >/dev/null 2>&1; then
-  docker buildx build --load -t identification-rust-base:latest -f Dockerfile .
+# Проверка GPU
+GPU_ENABLED=false
+if docker run --rm --gpus all nvidia/cuda:12.6.0-base-ubuntu24.04 nvidia-smi >/dev/null 2>&1; then
+    GPU_ENABLED=true
+    echo "[INFO] NVIDIA GPU обнаружена и доступна в Docker."
 else
-  echo "[WARN] buildx plugin не найден, используем legacy docker build." >&2
-  docker build -t identification-rust-base:latest -f Dockerfile .
+    echo "[WARN] GPU не найдена или драйверы не проброшены. Будет использован CPU."
 fi
 
-# Запуск сервисов в фоне (без дополнительной сборки через compose).
-docker compose up -d --no-build --force-recreate --remove-orphans db vision-worker audio-worker gateway-service
+echo "--- [2/4] Сборка базового образа ---"
+# Собираем образ, где есть Rust и зависимости
+docker build -t "$BASE_IMAGE" -f Dockerfile .
 
-# Ждём, пока gateway откроет порт на хосте.
+echo "--- [3/4] Предварительная сборка проекта (Pre-build) ---"
+# Это самый важный этап. Собираем проект один раз, чтобы избежать Lockup в Docker Compose.
+# Мы используем временный контейнер, который скомпилирует всё в общую папку target.
+docker run --rm \
+    -v "$(pwd)":/workspace/identification \
+    -v cargo-registry:/usr/local/cargo/registry \
+    -e ORT_STRATEGY=download \
+    -w /workspace/identification \
+    "$BASE_IMAGE" \
+    cargo build --release --workspace
+
+echo "--- [4/4] Запуск сервисов через Docker Compose ---"
+# Теперь запускаем всё. --no-build гарантирует, что мы используем результат шага выше.
+# Мы убрали лимиты CPU в compose (ранее), чтобы всё прошло гладко.
+docker compose up -d --no-build --force-recreate --remove-orphans
+
+# Ожидание готовности Gateway
 wait_gateway() {
-  local retries=60
-  for ((i=1; i<=retries; i++)); do
-    if (echo > /dev/tcp/127.0.0.1/50051) >/dev/null 2>&1; then
-      return 0
-    fi
-    sleep 1
-  done
-  return 1
+    echo -n "[INFO] Ожидание запуска Gateway (127.0.0.1:50051)..."
+    local retries=30
+    while ! nc -z 127.0.0.1 50051 >/dev/null 2>&1; do
+        sleep 2
+        retries=$((retries - 1))
+        echo -n "."
+        if [ "$retries" -le 0 ]; then
+            echo -e "\n[ERROR] Gateway не ответил за 60 секунд."
+            return 1
+        fi
+    done
+    echo -e " Готово!"
 }
 
-if ! wait_gateway; then
-  echo "[ERROR] Gateway не поднялся на 127.0.0.1:50051 за отведённое время."
-  echo "Текущий статус контейнеров:"
-  docker compose ps || true
-  echo
-  echo "Последние логи gateway-service:"
-  docker compose logs --tail=120 gateway-service || true
-  exit 1
+if wait_gateway; then
+    echo "----------------------------------------------------"
+    echo "Система успешно запущена!"
+    echo "Gateway: http://127.0.0.1:50051"
+    echo "Для мониторинга используй: docker compose logs -f"
+    echo "----------------------------------------------------"
+else
+    echo "[CRITICAL] Ошибка при запуске. Проверь логи: docker compose logs gateway-service"
+    exit 1
 fi
-
-# Печатаем состояние контейнеров.
-docker compose ps
-
-echo
-echo "Сервисы запущены в Docker."
-echo "Логи vision:  docker compose logs -f vision-worker"
-echo "Логи audio:   docker compose logs -f audio-worker"
-echo "Логи gateway: docker compose logs -f gateway-service"
-echo
-echo "Проверка GPU внутри vision-контейнера:"
-echo "  docker compose exec vision-worker nvidia-smi"
-echo
-echo "Для клиента с хоста используй gateway: 127.0.0.1:50051"
-
-echo
-echo "Остановка Docker-сервисов:"
-echo "  docker compose stop      # остановить контейнеры"
-echo "  docker compose down      # остановить и удалить контейнеры/сеть"
