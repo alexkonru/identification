@@ -1,0 +1,6 @@
+.git
+target
+logs
+client/.venv
+**/__pycache__
+nohup.out
