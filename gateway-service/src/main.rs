@@ -2,21 +2,21 @@ use glob::glob;
 use pgvector::Vector;
 use shared::biometry::gatekeeper_server::{Gatekeeper, GatekeeperServer};
 use shared::biometry::{
-    AccessCheckResponse, AddDeviceRequest, AddRoomRequest, AddZoneRequest, CheckAccessRequest,
-    ControlDoorRequest, ControlServiceRequest, Device, Empty, GetLogsRequest, GetLogsResponse,
-    GetUserAccessResponse, GrantAccessRequest, IdRequest, IdResponse, ImageFrame,
-    ListDevicesRequest, ListDevicesResponse, ListRoomsRequest, ListRoomsResponse, ListUsersRequest,
-    ListUsersResponse, ListZonesRequest, ListZonesResponse, LogEntry, RegisterUserRequest, Room,
-    RuntimeModeRequest, RuntimeModeResponse, ScanHardwareResponse, ServiceStatus,
-    SetAccessRulesRequest, StatusResponse, SystemStatusResponse, User, Zone,
-    audio_client::AudioClient, vision_client::VisionClient,
+    AccessCheckResponse, AccessCheckResponseV2, AddDeviceRequest, AddRoomRequest, AddZoneRequest,
+    CheckAccessRequest, CheckAccessRequestV2, ControlDoorRequest, ControlServiceRequest, Device,
+    Empty, GetLogsRequest, GetLogsResponse, GetUserAccessResponse, GrantAccessRequest, IdRequest,
+    IdResponse, ImageFrame, ListDevicesRequest, ListDevicesResponse, ListRoomsRequest,
+    ListRoomsResponse, ListUsersRequest, ListUsersResponse, ListZonesRequest, ListZonesResponse,
+    LogEntry, RegisterUserRequest, Room, RuntimeModeRequest, RuntimeModeResponse,
+    ScanHardwareResponse, ServiceStatus, SetAccessRulesRequest, StatusResponse,
+    SystemStatusResponse, User, Zone, audio_client::AudioClient, vision_client::VisionClient,
 };
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{Pool, Postgres, Row};
 use std::path::PathBuf;
 use tokio::process::Command;
 use tokio::sync::mpsc;
-use tokio::time::{Duration, sleep};
+use tokio::time::{Duration, sleep, timeout};
 use tonic::{
     Request, Response, Status,
     transport::{Channel, Server},
@@ -28,6 +28,13 @@ struct FaceProcessResult {
     liveness_score: f32,
     is_live: bool,
     provider: String,
+}
+
+struct ClipFrameAssessment {
+    index: usize,
+    detected: bool,
+    is_live: bool,
+    liveness_score: f32,
 }
 
 struct HardwareProfile {
@@ -51,6 +58,8 @@ pub struct GatewayService {
     face_similarity_threshold: f64,
     voice_similarity_threshold: f64,
     test_device_id: i32,
+    vision_rpc_timeout: Duration,
+    audio_rpc_timeout: Duration,
     shutdown_tx: mpsc::Sender<()>,
 }
 
@@ -62,6 +71,8 @@ impl GatewayService {
         face_similarity_threshold: f64,
         voice_similarity_threshold: f64,
         test_device_id: i32,
+        vision_rpc_timeout: Duration,
+        audio_rpc_timeout: Duration,
         shutdown_tx: mpsc::Sender<()>,
     ) -> Self {
         Self {
@@ -71,6 +82,8 @@ impl GatewayService {
             face_similarity_threshold,
             voice_similarity_threshold,
             test_device_id,
+            vision_rpc_timeout,
+            audio_rpc_timeout,
             shutdown_tx,
         }
     }
@@ -82,21 +95,27 @@ impl GatewayService {
             content: image.to_vec(),
         });
 
-        match client.process_face(request).await {
-            Ok(response) => {
-                let res = response.into_inner();
-                if res.detected && !res.embedding.is_empty() {
-                    Ok(Some(FaceProcessResult {
-                        embedding: res.embedding,
-                        liveness_score: res.liveness_score,
-                        is_live: res.is_live,
-                        provider: res.execution_provider,
-                    }))
-                } else {
-                    Ok(None)
+        match timeout(self.vision_rpc_timeout, client.process_face(request)).await {
+            Err(_) => Err(Status::deadline_exceeded(format!(
+                "Vision service timeout after {} ms",
+                self.vision_rpc_timeout.as_millis()
+            ))),
+            Ok(result) => match result {
+                Ok(response) => {
+                    let res = response.into_inner();
+                    if res.detected && !res.embedding.is_empty() {
+                        Ok(Some(FaceProcessResult {
+                            embedding: res.embedding,
+                            liveness_score: res.liveness_score,
+                            is_live: res.is_live,
+                            provider: res.execution_provider,
+                        }))
+                    } else {
+                        Ok(None)
+                    }
                 }
-            }
-            Err(e) => Err(Status::internal(format!("Vision service error: {}", e))),
+                Err(e) => Err(Status::internal(format!("Vision service error: {}", e))),
+            },
         }
     }
 
@@ -107,16 +126,22 @@ impl GatewayService {
             sample_rate: 16000,
         });
 
-        match client.process_voice(request).await {
-            Ok(response) => {
-                let bio_result = response.into_inner();
-                if bio_result.detected && !bio_result.embedding.is_empty() {
-                    Ok(Some(bio_result.embedding))
-                } else {
-                    Ok(None)
+        match timeout(self.audio_rpc_timeout, client.process_voice(request)).await {
+            Err(_) => Err(Status::deadline_exceeded(format!(
+                "Audio service timeout after {} ms",
+                self.audio_rpc_timeout.as_millis()
+            ))),
+            Ok(result) => match result {
+                Ok(response) => {
+                    let bio_result = response.into_inner();
+                    if bio_result.detected && !bio_result.embedding.is_empty() {
+                        Ok(Some(bio_result.embedding))
+                    } else {
+                        Ok(None)
+                    }
                 }
-            }
-            Err(e) => Err(Status::internal(format!("Audio service error: {}", e))),
+                Err(e) => Err(Status::internal(format!("Audio service error: {}", e))),
+            },
         }
     }
 
@@ -141,6 +166,68 @@ impl GatewayService {
             connection_string: "0".to_string(), // Webcam 0
             is_active: true,
         }
+    }
+
+    fn map_stage_to_v2(stage: &str, granted: bool) -> i32 {
+        if granted {
+            return 7; // ACCESS_STAGE_GRANTED
+        }
+        match stage {
+            "presence" | "face_detection" => 1,
+            "liveness" => 3,
+            "face_match" => 4,
+            "voice_detection" | "voice_match" | "audio_warning" | "audio_error" => 5,
+            "access_rules" | "device_config" => 6,
+            _ => 8,
+        }
+    }
+
+    async fn pick_best_clip_frame(&self, frames: &[Vec<u8>]) -> (usize, Vec<String>) {
+        let mut flags = Vec::new();
+        let mut best: Option<ClipFrameAssessment> = None;
+
+        for (index, frame) in frames.iter().enumerate() {
+            match self.process_face_full(frame).await {
+                Ok(Some(face)) => {
+                    let candidate = ClipFrameAssessment {
+                        index,
+                        detected: true,
+                        is_live: face.is_live,
+                        liveness_score: face.liveness_score,
+                    };
+                    best = match best {
+                        None => Some(candidate),
+                        Some(current_best) => {
+                            let current_score = (if current_best.detected { 1.0 } else { 0.0 })
+                                + (if current_best.is_live { 2.0 } else { 0.0 })
+                                + current_best.liveness_score;
+                            let next_score = (if candidate.detected { 1.0 } else { 0.0 })
+                                + (if candidate.is_live { 2.0 } else { 0.0 })
+                                + candidate.liveness_score;
+                            if next_score > current_score {
+                                Some(candidate)
+                            } else {
+                                Some(current_best)
+                            }
+                        }
+                    };
+                }
+                Ok(None) => {}
+                Err(err) => {
+                    tracing::warn!("clip frame {} face pre-check failed: {}", index, err);
+                    flags.push("frame_precheck_error".to_string());
+                }
+            }
+        }
+
+        let has_best = best.is_some();
+        let best_idx = best.as_ref().map(|f| f.index).unwrap_or(frames.len() / 2);
+        if !has_best {
+            flags.push("clip_no_face_precheck_fallback_middle_frame".to_string());
+        } else if frames.len() > 1 {
+            flags.push("clip_mode_best_frame_selected".to_string());
+        }
+        (best_idx, flags)
     }
 
     fn detect_hardware_profile() -> HardwareProfile {
@@ -764,68 +851,61 @@ impl Gatekeeper for GatewayService {
             return Ok(Response::new(response));
         }
 
-        // 3) Voice identification (optional but required for multimodal pass when provided)
+        // 3) Voice identification (optional, never causes DENY)
+        let mut confidence_adjust: f32 = 0.0;
+        let mut soft_flags: Vec<&str> = Vec::new();
         if response.voice_provided {
             let voice_res_opt = match self.process_voice_embedding(&req.audio).await {
                 Ok(v) => v,
                 Err(e) => {
-                    response.message = format!("Audio backend error: {}", e.message());
-                    response.decision_stage = "audio_error".into();
-                    self.log_access(
-                        Some(user_id),
-                        device_id,
-                        false,
-                        &format!("DENIED [AudioError] {}", response.message),
-                    )
-                    .await;
-                    return Ok(Response::new(response));
-                }
-            };
-            let voice_emb = match voice_res_opt {
-                Some(v) => {
-                    response.voice_detected = true;
-                    v
-                }
-                None => {
-                    response.message = "Voice not detected".into();
-                    response.decision_stage = "voice_detection".into();
-                    self.log_access(
-                        Some(user_id),
-                        device_id,
-                        false,
-                        "DENIED [Voice] Voice not detected",
-                    )
-                    .await;
-                    return Ok(Response::new(response));
+                    response.message = format!(
+                        "{}; audio backend warning: {}",
+                        response.message,
+                        e.message()
+                    );
+                    response.decision_stage = "audio_warning".into();
+                    soft_flags.push("audio_backend_warning");
+                    confidence_adjust -= 0.10;
+                    None
                 }
             };
 
-            let voice_match = sqlx::query(
-                "SELECT (embedding <-> $1) as distance FROM voice_embeddings WHERE user_id = $2 LIMIT 1",
-            )
-            .bind(Vector::from(voice_emb))
-            .bind(user_id)
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(|e| Status::internal(format!("DB voice error: {}", e)))?;
-
-            let voice_dist = voice_match
-                .and_then(|r| r.get::<Option<f64>, _>("distance"))
-                .unwrap_or(1.0);
-            response.voice_distance = voice_dist as f32;
-            response.voice_match = voice_dist < self.voice_similarity_threshold;
-
-            if !response.voice_match {
-                response.message = format!("Voice not matched (distance {:.3})", voice_dist);
-                response.decision_stage = "voice_match".into();
-                self.log_access(
-                    Some(user_id),
-                    device_id,
-                    false,
-                    &format!("DENIED [Voice] {}", response.message),
+            if let Some(voice_emb) = voice_res_opt {
+                response.voice_detected = true;
+                let voice_match = sqlx::query(
+                    "SELECT (embedding <-> $1) as distance FROM voice_embeddings WHERE user_id = $2 LIMIT 1",
                 )
-                .await;
-                return Ok(Response::new(response));
+                .bind(Vector::from(voice_emb))
+                .bind(user_id)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|e| Status::internal(format!("DB voice error: {}", e)))?;
+
+                let voice_dist = voice_match
+                    .and_then(|r| r.get::<Option<f64>, _>("distance"))
+                    .unwrap_or(1.0);
+                response.voice_distance = voice_dist as f32;
+                response.voice_match = voice_dist < self.voice_similarity_threshold;
+
+                if response.voice_match {
+                    confidence_adjust += 0.10;
+                } else {
+                    confidence_adjust -= 0.05;
+                    soft_flags.push("voice_mismatch");
+                }
+            } else {
+                response.voice_detected = false;
+                confidence_adjust -= 0.10;
+                soft_flags.push("suspicious_audio");
+            }
+        }
+
+        if !soft_flags.is_empty() {
+            let flags_text = soft_flags.join(",");
+            if response.message.is_empty() {
+                response.message = format!("flags={}", flags_text);
+            } else {
+                response.message = format!("{}; flags={}", response.message, flags_text);
             }
         }
 
@@ -835,9 +915,11 @@ impl Gatekeeper for GatewayService {
         } else {
             1.0
         };
-        response.final_confidence =
-            (0.4 * response.face_liveness_score + 0.35 * face_conf + 0.25 * voice_conf)
-                .clamp(0.0, 1.0);
+        response.final_confidence = (0.4 * response.face_liveness_score
+            + 0.35 * face_conf
+            + 0.25 * voice_conf
+            + confidence_adjust)
+            .clamp(0.0, 1.0);
 
         // 4) Access policy check
         if device_id == self.test_device_id {
@@ -1007,6 +1089,88 @@ impl Gatekeeper for GatewayService {
             .collect();
 
         Ok(Response::new(GetLogsResponse { logs }))
+    }
+
+    async fn check_access_v2(
+        &self,
+        request: Request<CheckAccessRequestV2>,
+    ) -> Result<Response<AccessCheckResponseV2>, Status> {
+        let req = request.into_inner();
+        if req.frames.is_empty() {
+            return Ok(Response::new(AccessCheckResponseV2 {
+                granted: false,
+                stage: 1,
+                reason: "No frames provided".to_string(),
+                confidence: 0.0,
+                user_id: 0,
+                user_name: "Unknown".to_string(),
+                face_detected: false,
+                face_quality: 0.0,
+                face_live_score: 0.0,
+                face_live: false,
+                face_distance: 1.0,
+                face_match: false,
+                voice_provided: !req.audio.is_empty(),
+                speech_present: !req.audio.is_empty(),
+                voice_live_score: 0.0,
+                voice_live: false,
+                voice_distance: 1.0,
+                voice_match: false,
+                suspicious_audio: false,
+                flags: vec!["no_frames".to_string()],
+                session_id: req.session_id,
+            }));
+        }
+
+        let mut flags = Vec::new();
+        if !req.frame_timestamps_ms.is_empty() && req.frame_timestamps_ms.len() != req.frames.len()
+        {
+            flags.push("frame_timestamps_mismatch".to_string());
+        }
+
+        let (best_idx, mut clip_flags) = self.pick_best_clip_frame(&req.frames).await;
+        flags.append(&mut clip_flags);
+
+        let speech_present = !req.audio.is_empty();
+        let legacy_req = CheckAccessRequest {
+            device_id: req.device_id,
+            image: req.frames[best_idx].clone(),
+            audio: req.audio,
+            audio_sample_rate: req.audio_sample_rate,
+        };
+        let legacy_resp = self
+            .check_access(Request::new(legacy_req))
+            .await?
+            .into_inner();
+
+        let suspicious = legacy_resp.message.contains("suspicious_audio");
+        if suspicious {
+            flags.push("suspicious_audio".to_string());
+        }
+
+        Ok(Response::new(AccessCheckResponseV2 {
+            granted: legacy_resp.granted,
+            stage: Self::map_stage_to_v2(&legacy_resp.decision_stage, legacy_resp.granted),
+            reason: legacy_resp.message,
+            confidence: legacy_resp.final_confidence,
+            user_id: 0,
+            user_name: legacy_resp.user_name,
+            face_detected: legacy_resp.face_detected,
+            face_quality: if legacy_resp.face_detected { 1.0 } else { 0.0 },
+            face_live_score: legacy_resp.face_liveness_score,
+            face_live: legacy_resp.face_live,
+            face_distance: legacy_resp.face_distance,
+            face_match: legacy_resp.face_match,
+            voice_provided: legacy_resp.voice_provided,
+            speech_present,
+            voice_live_score: if legacy_resp.voice_detected { 1.0 } else { 0.0 },
+            voice_live: legacy_resp.voice_detected,
+            voice_distance: legacy_resp.voice_distance,
+            voice_match: legacy_resp.voice_match,
+            suspicious_audio: suspicious,
+            flags,
+            session_id: req.session_id,
+        }))
     }
 
     async fn get_system_status(
@@ -1290,6 +1454,14 @@ async fn connect_db_with_retry(database_url: &str) -> Result<Pool<Postgres>, sql
     Err(last_err.expect("last database error should be set"))
 }
 
+fn env_duration_ms(name: &str, default_ms: u64) -> Duration {
+    let value = std::env::var(name)
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(default_ms);
+    Duration::from_millis(value)
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
@@ -1337,6 +1509,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .expect("TEST_DEVICE_ID must be a valid i32");
 
     let (shutdown_tx, mut shutdown_rx) = mpsc::channel(1);
+    let vision_rpc_timeout = env_duration_ms("VISION_RPC_TIMEOUT_MS", 1500);
+    let audio_rpc_timeout = env_duration_ms("AUDIO_RPC_TIMEOUT_MS", 2000);
 
     let gateway = GatewayService::new(
         pool,
@@ -1345,6 +1519,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         face_similarity_threshold,
         voice_similarity_threshold,
         test_device_id,
+        vision_rpc_timeout,
+        audio_rpc_timeout,
         shutdown_tx,
     );
 

@@ -22,7 +22,7 @@ services:
     container_name: vision-worker
     working_dir: /workspace/identification
     command: ["bash", "-lc", "cargo run --release -p vision-worker"]
-    #cpuset: "${VISION_CPUSET:-0,1}"
+    cpuset: "${VISION_CPUSET:-0,1}"
     ports:
       - "50052:50052"
     volumes:
@@ -32,8 +32,6 @@ services:
       - target-cache-vision:/workspace/identification/target
     environment:
       RUST_LOG: "${RUST_LOG:-vision_worker=info,ort::logging=warn}"
-      # По умолчанию на слабых ноутбуках (MX230/Vega) безопаснее CPU.
-      # На мощной NVIDIA: VISION_FORCE_CPU=0
       VISION_FORCE_CPU: "${VISION_FORCE_CPU:-1}"
       VISION_CUDA_DEVICE_ID: "${VISION_CUDA_DEVICE_ID:-}"
       VISION_CUDA_MEM_LIMIT_MB: "${VISION_CUDA_MEM_LIMIT_MB:-1024}"
@@ -44,10 +42,10 @@ services:
       NVIDIA_VISIBLE_DEVICES: "${NVIDIA_VISIBLE_DEVICES:-all}"
       NVIDIA_DRIVER_CAPABILITIES: "${NVIDIA_DRIVER_CAPABILITIES:-compute,utility}"
     gpus: all
-    #deploy:
-     # resources:
-      #  limits:
-       #   cpus: "${VISION_CPU_LIMIT:-2.0}"
+    deploy:
+      resources:
+        limits:
+          cpus: "${VISION_CPU_LIMIT:-2.0}"
     depends_on:
       db:
         condition: service_healthy
@@ -57,7 +55,7 @@ services:
     container_name: audio-worker
     working_dir: /workspace/identification
     command: ["bash", "-lc", "cargo run --release -p audio-worker"]
-    #cpuset: "${AUDIO_CPUSET:-2,3}"
+    cpuset: "${AUDIO_CPUSET:-2,3}"
     ports:
       - "50053:50053"
     volumes:
@@ -77,10 +75,10 @@ services:
       NVIDIA_VISIBLE_DEVICES: "${NVIDIA_VISIBLE_DEVICES:-all}"
       NVIDIA_DRIVER_CAPABILITIES: "${NVIDIA_DRIVER_CAPABILITIES:-compute,utility}"
     gpus: all
-    #deploy:
-     # resources:
-      #  limits:
-       #   cpus: "${AUDIO_CPU_LIMIT:-2.0}"
+    deploy:
+      resources:
+        limits:
+          cpus: "${AUDIO_CPU_LIMIT:-2.0}"
     depends_on:
       db:
         condition: service_healthy
@@ -90,7 +88,7 @@ services:
     container_name: gateway-service
     working_dir: /workspace/identification
     command: ["bash", "-lc", "cargo run --release -p gateway-service"]
-    #cpuset: "${GATEWAY_CPUSET:-0-3}"
+    cpuset: "${GATEWAY_CPUSET:-0-3}"
     ports:
       - "50051:50051"
     volumes:
