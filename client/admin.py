@@ -17,8 +17,8 @@ from PyQt6.QtWidgets import (
     QTreeWidget, QTreeWidgetItem, QTreeWidgetItemIterator, QHeaderView, QSplitter, QCheckBox, QTableWidget, QTableWidgetItem,
     QScrollArea, QTextEdit, QGridLayout
 )
-from PyQt6.QtGui import QImage, QPixmap, QPalette, QColor, QFont, QIcon
-from PyQt6.QtCore import Qt, QTimer, QSize, QThread, pyqtSignal, QMutex
+from PyQt6.QtGui import QImage, QPixmap, QPalette, QColor, QFont
+from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal, QMutex
 
 import biometry_pb2
 import biometry_pb2_grpc
@@ -790,7 +790,10 @@ class MonitoringTab(QWidget):
         self.ident_cooldown_until = 0.0
         self.await_presence_clear = False
         self.door_sessions = {}
+<<<<<<< codex/review-database-structure-and-normalization-6qlwnh
         self.presence_hits = {}
+=======
+>>>>>>> master
         self.setup_ui()
 
     def setup_ui(self):
@@ -927,7 +930,10 @@ class MonitoringTab(QWidget):
             t.wait()
         self.active_cameras.clear()
         self.door_sessions.clear()
+<<<<<<< codex/review-database-structure-and-normalization-6qlwnh
         self.presence_hits.clear()
+=======
+>>>>>>> master
 
     def restart_videos(self):
         item = self.tree.currentItem()
@@ -947,6 +953,7 @@ class MonitoringTab(QWidget):
             except Exception:
                 return fallback
         return fallback
+<<<<<<< codex/review-database-structure-and-normalization-6qlwnh
 
     @staticmethod
     def _pipeline_flags_to_text(flags):
@@ -973,6 +980,8 @@ class MonitoringTab(QWidget):
             elif f.startswith("step_policy:deny"):
                 mapped.append("доступ в помещение: DENY")
         return " -> ".join(mapped)
+=======
+>>>>>>> master
 
     def process_active_mode(self):
         # Последовательный пайплайн:
@@ -991,8 +1000,12 @@ class MonitoringTab(QWidget):
                 continue
 
             person_present = self.detect_person_in_frame(frame_np)
+<<<<<<< codex/review-database-structure-and-normalization-6qlwnh
             self.presence_hits[dev_id] = (self.presence_hits.get(dev_id, 0) + 1) if person_present else 0
             present = self.presence_hits[dev_id] >= 2
+=======
+            present = person_present
+>>>>>>> master
 
             if self.pipeline_stage == "presence":
                 if present:
@@ -1009,8 +1022,11 @@ class MonitoringTab(QWidget):
                     self.last_presence_state = False
                     self.await_presence_clear = False
                     self.door_sessions.pop(dev_id, None)
+<<<<<<< codex/review-database-structure-and-normalization-6qlwnh
                     if person_present and self.presence_hits[dev_id] == 1:
                         self.append_pipeline_log("[PRESENCE] Лицо нестабильно, ждём подтверждение во 2-м кадре.")
+=======
+>>>>>>> master
                     continue
 
             if self.pipeline_inflight:
@@ -1056,6 +1072,7 @@ class MonitoringTab(QWidget):
                         access.granted = getattr(door_resp, "access_granted", False)
                         access.message = getattr(door_resp, "reason", "")
                         access.final_confidence = self._extract_confidence(getattr(door_resp, "reason", ""), float(getattr(door_resp, "confidence", 0.0)))
+<<<<<<< codex/review-database-structure-and-normalization-6qlwnh
                         raw_flags = list(getattr(door_resp, 'flags', []))
                         self.append_pipeline_log(
                             f"[PIPELINE] {self._pipeline_flags_to_text(raw_flags)}"
@@ -1063,6 +1080,11 @@ class MonitoringTab(QWidget):
                         self.append_pipeline_log(
                             f"[DOOR] stage={getattr(door_resp, 'stage', 0)} conf={access.final_confidence:.2f} "
                             f"flags={raw_flags} reason={access.message}"
+=======
+                        self.append_pipeline_log(
+                            f"[DOOR] stage={getattr(door_resp, 'stage', 0)} conf={access.final_confidence:.2f} "
+                            f"flags={list(getattr(door_resp, 'flags', []))} reason={access.message}"
+>>>>>>> master
                         )
                     else:
                         clip_frames = [frame]

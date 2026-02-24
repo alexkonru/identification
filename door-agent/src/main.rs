@@ -219,7 +219,10 @@ impl DoorAgent for DoorAgentService {
             DoorPipelineStage::DoorStagePresence as i32
         };
 
+<<<<<<< codex/review-database-structure-and-normalization-6qlwnh
         let flags = Self::build_pipeline_flags(&result);
+=======
+>>>>>>> master
         Ok(Response::new(Self::mk_response(
             result.granted,
             stage,
@@ -227,7 +230,11 @@ impl DoorAgent for DoorAgentService {
             result.confidence,
             result.user_name,
             false,
+<<<<<<< codex/review-database-structure-and-normalization-6qlwnh
             flags,
+=======
+            result.flags,
+>>>>>>> master
         )))
     }
 
