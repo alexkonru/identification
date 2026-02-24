@@ -39,6 +39,39 @@ impl DoorAgentService {
             .as_millis() as i64
     }
 
+    fn build_pipeline_flags(result: &shared::biometry::AccessCheckResponseV2) -> Vec<String> {
+        let mut out = Vec::new();
+        out.push(format!(
+            "step_presence:{}",
+            if result.face_detected { "ok" } else { "fail" }
+        ));
+        out.push(format!(
+            "step_liveness:{}:{:.2}",
+            if result.face_live { "ok" } else { "fail" },
+            result.face_live_score
+        ));
+        out.push(format!(
+            "step_face_id:{}:{:.3}",
+            if result.face_match { "ok" } else { "fail" },
+            result.face_distance
+        ));
+        if result.voice_provided {
+            out.push(format!(
+                "step_voice_id:{}:{:.3}",
+                if result.voice_match { "ok" } else { "warn" },
+                result.voice_distance
+            ));
+        } else {
+            out.push("step_voice_id:skip".to_string());
+        }
+        out.push(format!(
+            "step_policy:{}",
+            if result.granted { "ok" } else { "deny" }
+        ));
+        out.extend(result.flags.clone());
+        out
+    }
+
     fn mk_response(
         access_granted: bool,
         stage: i32,
@@ -186,6 +219,10 @@ impl DoorAgent for DoorAgentService {
             DoorPipelineStage::DoorStagePresence as i32
         };
 
+<<<<<<< codex/review-database-structure-and-normalization-6qlwnh
+        let flags = Self::build_pipeline_flags(&result);
+=======
+>>>>>>> master
         Ok(Response::new(Self::mk_response(
             result.granted,
             stage,
@@ -193,7 +230,11 @@ impl DoorAgent for DoorAgentService {
             result.confidence,
             result.user_name,
             false,
+<<<<<<< codex/review-database-structure-and-normalization-6qlwnh
+            flags,
+=======
             result.flags,
+>>>>>>> master
         )))
     }
 
