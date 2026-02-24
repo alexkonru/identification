@@ -613,6 +613,7 @@ class MonitoringTab(QWidget):
         self.pipeline_stage = "presence"
         self.ident_cooldown_until = 0.0
         self.await_presence_clear = False
+        self.door_sessions = {}
         self.setup_ui()
 
     def setup_ui(self):
@@ -748,6 +749,7 @@ class MonitoringTab(QWidget):
             t.stop()
             t.wait()
         self.active_cameras.clear()
+        self.door_sessions.clear()
 
     def restart_videos(self):
         item = self.tree.currentItem()
@@ -787,6 +789,7 @@ class MonitoringTab(QWidget):
                         self.append_pipeline_log("[PRESENCE] Нет человека у входа.")
                     self.last_presence_state = False
                     self.await_presence_clear = False
+                    self.door_sessions.pop(dev_id, None)
                     continue
 
             if self.pipeline_inflight:
@@ -802,45 +805,29 @@ class MonitoringTab(QWidget):
                 self.pipeline_inflight = True
                 audio_bytes = audio_probe if voice_present else self.capture_audio_raw(duration_s=0.25, sample_rate=16000)
                 try:
-                    clip_frames = [frame]
-                    clip_ts = [int(time.time() * 1000)]
-                    for _ in range(2):
-                        extra = t.get_frame_copy()
-                        if extra is None:
-                            continue
-                        ok_extra, enc_extra = cv2.imencode('.jpg', extra)
-                        if not ok_extra:
-                            continue
-                        clip_frames.append(enc_extra.tobytes())
-                        clip_ts.append(int(time.time() * 1000))
+                    session_id = self.door_sessions.get(dev_id)
+                    if not session_id:
+                        session_id = f"ui-{dev_id}-{uuid.uuid4().hex[:8]}"
+                        self.door_sessions[dev_id] = session_id
 
-                    session_id = f"ui-{dev_id}-{uuid.uuid4().hex[:8]}"
                     door_resp = self.client.submit_door_observation(
                         session_id=session_id,
                         device_id=dev_id,
                         frame=frame,
                         audio=audio_bytes or b"",
                         sample_rate=16000,
-                        timestamp_ms=clip_ts[0],
-                    )
-                    if door_resp is not None and getattr(door_resp, "pending", False):
-                        self.pipeline_inflight = False
-                        self.pipeline_stage = "presence"
-                        self.append_pipeline_log(
-                            f"[DOOR] stage={getattr(door_resp, 'stage', 0)} pending: {getattr(door_resp, 'reason', '')}"
-                        )
-                        continue
-
-                    access_v2 = self.client.check_access_v2(
-                        session_id=session_id,
-                        device_id=dev_id,
-                        frames=clip_frames,
-                        audio_bytes=audio_bytes,
-                        sample_rate=16000,
-                        frame_timestamps_ms=clip_ts,
+                        timestamp_ms=int(time.time() * 1000),
                     )
 
-                    if door_resp is not None and not getattr(door_resp, "pending", False):
+                    if door_resp is not None:
+                        if getattr(door_resp, "pending", False):
+                            self.pipeline_inflight = False
+                            self.append_pipeline_log(
+                                f"[DOOR] stage={getattr(door_resp, 'stage', 0)} pending: {getattr(door_resp, 'reason', '')}"
+                            )
+                            continue
+
+                        self.door_sessions.pop(dev_id, None)
                         class AccessCompat:
                             pass
                         access = AccessCompat()
@@ -852,33 +839,47 @@ class MonitoringTab(QWidget):
                             f"[DOOR] stage={getattr(door_resp, 'stage', 0)} conf={access.final_confidence:.2f} "
                             f"flags={list(getattr(door_resp, 'flags', []))} reason={access.message}"
                         )
-                    elif access_v2 is not None:
-                        class AccessCompat:
-                            pass
-                        access = AccessCompat()
-                        access.user_name = getattr(access_v2, "user_name", "Unknown")
-                        access.granted = getattr(access_v2, "granted", False)
-                        access.message = getattr(access_v2, "reason", "")
-                        access.final_confidence = float(getattr(access_v2, "confidence", 0.0))
-                        face_dist = float(getattr(access_v2, "face_distance", 1.0))
-                        face_live = bool(getattr(access_v2, "face_live", False))
-                        voice_dist = float(getattr(access_v2, "voice_distance", 1.0))
-                        stage = int(getattr(access_v2, "stage", 0))
-                        flags = list(getattr(access_v2, "flags", []))
-                        self.append_pipeline_log(
-                            f"[IDENT] V2 stage={stage} conf={access.final_confidence:.2f} face_dist={face_dist:.3f} "
-                            f"face_live={face_live} voice_dist={voice_dist:.3f} flags={flags} reason={access.message}"
-                        )
                     else:
-                        access = self.client.check_access(
+                        clip_frames = [frame]
+                        clip_ts = [int(time.time() * 1000)]
+                        for _ in range(2):
+                            extra = t.get_frame_copy()
+                            if extra is None:
+                                continue
+                            ok_extra, enc_extra = cv2.imencode('.jpg', extra)
+                            if not ok_extra:
+                                continue
+                            clip_frames.append(enc_extra.tobytes())
+                            clip_ts.append(int(time.time() * 1000))
+
+                        access_v2 = self.client.check_access_v2(
+                            session_id=session_id,
                             device_id=dev_id,
-                            image_bytes=frame,
+                            frames=clip_frames,
                             audio_bytes=audio_bytes,
                             sample_rate=16000,
+                            frame_timestamps_ms=clip_ts,
                         )
+                        if access_v2 is None:
+                            access = self.client.check_access(
+                                device_id=dev_id,
+                                image_bytes=frame,
+                                audio_bytes=audio_bytes,
+                                sample_rate=16000,
+                            )
+                        else:
+                            class AccessCompat:
+                                pass
+                            access = AccessCompat()
+                            access.user_name = getattr(access_v2, "user_name", "Unknown")
+                            access.granted = getattr(access_v2, "granted", False)
+                            access.message = getattr(access_v2, "reason", "")
+                            access.final_confidence = float(getattr(access_v2, "confidence", 0.0))
+
                 except Exception as e:
                     self.pipeline_inflight = False
                     self.pipeline_stage = "presence"
+                    self.door_sessions.pop(dev_id, None)
                     self.append_pipeline_log(f"[IDENT] ошибка RPC: {e}")
                     continue
 
