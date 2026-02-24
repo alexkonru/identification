@@ -931,11 +931,16 @@ impl Gatekeeper for GatewayService {
         let face_min_margin = std::env::var("FACE_MATCH_MIN_MARGIN")
             .ok()
             .and_then(|v| v.parse::<f64>().ok())
-            .unwrap_or(0.08);
+            .unwrap_or(0.12);
 
         response.face_distance = face_dist as f32;
-        response.face_match =
-            face_dist < self.face_similarity_threshold && face_margin >= face_min_margin;
+        let strict_face_distance = std::env::var("ACCESS_STRICT_FACE_DISTANCE")
+            .ok()
+            .and_then(|v| v.parse::<f64>().ok())
+            .unwrap_or(0.42);
+        response.face_match = face_dist < self.face_similarity_threshold
+            && face_margin >= face_min_margin
+            && face_dist <= strict_face_distance;
         response.user_name = if response.face_match {
             user_name.clone()
         } else {

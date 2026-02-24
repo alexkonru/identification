@@ -1,4 +1,5 @@
 import os
+import json
 import subprocess
 import sys
 import time
@@ -34,7 +35,23 @@ def parse_kv_env_file(path: Path) -> dict:
         cfg[key.strip()] = value.strip()
     return cfg
 
-# --- Dark Theme & Style ---
+# --- Theme & UI Settings ---
+UI_SETTINGS_PATH = Path.home() / ".biometry_ui_settings.json"
+
+
+def load_ui_settings() -> dict:
+    if not UI_SETTINGS_PATH.exists():
+        return {"theme": "dark", "font_size": 13}
+    try:
+        return json.loads(UI_SETTINGS_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return {"theme": "dark", "font_size": 13}
+
+
+def save_ui_settings(data: dict):
+    UI_SETTINGS_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 def set_dark_theme(app):
     app.setStyle("Fusion")
     palette = QPalette()
@@ -52,6 +69,21 @@ def set_dark_theme(app):
     palette.setColor(QPalette.ColorRole.Highlight, QColor(42, 130, 218))
     palette.setColor(QPalette.ColorRole.HighlightedText, Qt.GlobalColor.black)
     app.setPalette(palette)
+
+
+def set_light_theme(app):
+    app.setStyle("Fusion")
+    app.setPalette(app.style().standardPalette())
+
+
+def apply_ui_theme(app, settings: dict):
+    if settings.get("theme", "dark") == "light":
+        set_light_theme(app)
+    else:
+        set_dark_theme(app)
+    font = app.font()
+    font.setPointSize(int(settings.get("font_size", 13)))
+    app.setFont(font)
 
 # --- gRPC Client Wrapper ---
 class BiometryClient:
@@ -455,25 +487,8 @@ class PersonnelAccessTab(QWidget):
         self.rights_tree.setHeaderLabels(["Зона/Комната"])
         right.addWidget(self.rights_tree)
 
-        self.ui_scale = QComboBox()
-        self.ui_scale.addItems(["Компактный", "Стандарт", "Крупный"])
-        self.ui_scale.setCurrentText("Стандарт")
-        self.ui_scale.currentTextChanged.connect(self.apply_ui_scale)
-        self.layout_ratio = QComboBox()
-        self.layout_ratio.addItems(["Золотое сечение 38/62", "Равные панели 50/50"])
-        self.layout_ratio.currentTextChanged.connect(self.apply_layout_ratio)
+        right.addWidget(QLabel("Настройки интерфейса доступны во вкладке ⚙️ Настройки"))
 
-        controls = QHBoxLayout()
-        controls.addWidget(QLabel("Масштаб UI:"))
-        controls.addWidget(self.ui_scale)
-        controls.addSpacing(12)
-        controls.addWidget(QLabel("Разметка:"))
-        controls.addWidget(self.layout_ratio)
-        controls.addStretch()
-        self.btn_save = QPushButton("💾 Сохранить права")
-        self.btn_save.clicked.connect(self.save_rights)
-        controls.addWidget(self.btn_save)
-        right.addLayout(controls)
 
         self.splitter = QSplitter(Qt.Orientation.Horizontal)
         left_wrap = QWidget(); left_wrap.setLayout(left)
@@ -485,15 +500,7 @@ class PersonnelAccessTab(QWidget):
 
     def apply_layout_ratio(self):
         total = max(self.width(), 1000)
-        if self.layout_ratio.currentText().startswith("Золотое"):
-            self.splitter.setSizes([int(total * 0.38), int(total * 0.62)])
-        else:
-            self.splitter.setSizes([int(total * 0.5), int(total * 0.5)])
-
-    def apply_ui_scale(self):
-        scale_map = {"Компактный": 11, "Стандарт": 13, "Крупный": 15}
-        size = scale_map.get(self.ui_scale.currentText(), 13)
-        self.setStyleSheet(f"QWidget {{ font-size: {size}px; }}")
+        self.splitter.setSizes([int(total * 0.38), int(total * 0.62)])
 
     def refresh_users_only(self):
         current_uid = None
@@ -664,6 +671,32 @@ class InfrastructureTab(QWidget):
             if data[1].device_type == "lock": self.door_controls.setVisible(True)
     def control_door(self, cmd):
         if hasattr(self, 'current_dev_id'): self.client.control_door(self.current_dev_id, cmd)
+
+class SettingsTab(QWidget):
+    def __init__(self, app, settings):
+        super().__init__()
+        self.app = app
+        self.settings = settings
+        layout = QFormLayout(self)
+        self.theme = QComboBox()
+        self.theme.addItems(["dark", "light"])
+        self.theme.setCurrentText(settings.get("theme", "dark"))
+        self.font_size = QComboBox()
+        self.font_size.addItems(["11", "12", "13", "14", "15", "16"])
+        self.font_size.setCurrentText(str(settings.get("font_size", 13)))
+        self.btn_apply = QPushButton("Применить и сохранить")
+        self.btn_apply.clicked.connect(self.apply)
+        layout.addRow("Тема", self.theme)
+        layout.addRow("Размер шрифта", self.font_size)
+        layout.addRow(self.btn_apply)
+
+    def apply(self):
+        self.settings["theme"] = self.theme.currentText()
+        self.settings["font_size"] = int(self.font_size.currentText())
+        save_ui_settings(self.settings)
+        apply_ui_theme(self.app, self.settings)
+        QMessageBox.information(self, "Настройки", "Настройки интерфейса сохранены")
+
 
 class LogTab(QWidget):
     def __init__(self, client):
@@ -1148,11 +1181,12 @@ class VideoThread(QThread):
 
 
 class AdminApp(QMainWindow):
-    def __init__(self, client):
-        super().__init__(); self.setWindowTitle("Biometry Admin Panel 2.0"); self.resize(1200, 800); self.client = client
+    def __init__(self, app, client, ui_settings):
+        super().__init__(); self.setWindowTitle("Biometry Admin Panel 2.0"); self.resize(1280, 840); self.client = client; self.app = app; self.ui_settings = ui_settings
         self.tabs = QTabWidget(); self.personnel_tab = PersonnelAccessTab(self.client); self.monitor_tab = MonitoringTab(self.client)
         self.tabs.addTab(self.monitor_tab, "📹 Мониторинг")
         self.tabs.addTab(SystemTab(self.client), "⚙️ Система")
+        self.tabs.addTab(SettingsTab(self.app, self.ui_settings), "🎛 Настройки")
         self.tabs.addTab(self.personnel_tab, "👥 Персонал и доступ")
         self.tabs.addTab(InfrastructureTab(self.client), "🏗 Инфраструктура")
         self.tabs.addTab(LogTab(self.client), "📜 Журнал")
@@ -1166,7 +1200,8 @@ class AdminApp(QMainWindow):
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    set_dark_theme(app)
+    ui_settings = load_ui_settings()
+    apply_ui_theme(app, ui_settings)
 
     gateway_addr = os.getenv("GATEWAY_ADDR", "127.0.0.1:50051")
     if len(sys.argv) > 1 and sys.argv[1].strip():
@@ -1199,6 +1234,6 @@ if __name__ == "__main__":
         )
         sys.exit(1)
 
-    w = AdminApp(client)
+    w = AdminApp(app, client, ui_settings)
     w.show()
     sys.exit(app.exec())
