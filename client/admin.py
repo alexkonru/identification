@@ -1,5 +1,6 @@
 import os
 import json
+import re
 import subprocess
 import sys
 import time
@@ -81,9 +82,11 @@ def apply_ui_theme(app, settings: dict):
         set_light_theme(app)
     else:
         set_dark_theme(app)
+    app.setStyleSheet("")
     font = app.font()
     font.setPointSize(int(settings.get("font_size", 13)))
     app.setFont(font)
+    app.processEvents()
 
 # --- gRPC Client Wrapper ---
 class BiometryClient:
@@ -679,8 +682,8 @@ class SettingsTab(QWidget):
         self.settings = settings
         layout = QFormLayout(self)
         self.theme = QComboBox()
-        self.theme.addItems(["dark", "light"])
-        self.theme.setCurrentText(settings.get("theme", "dark"))
+        self.theme.addItems(["Тёмная", "Светлая"])
+        self.theme.setCurrentText("Светлая" if settings.get("theme", "dark") == "light" else "Тёмная")
         self.font_size = QComboBox()
         self.font_size.addItems(["11", "12", "13", "14", "15", "16"])
         self.font_size.setCurrentText(str(settings.get("font_size", 13)))
@@ -691,7 +694,7 @@ class SettingsTab(QWidget):
         layout.addRow(self.btn_apply)
 
     def apply(self):
-        self.settings["theme"] = self.theme.currentText()
+        self.settings["theme"] = "light" if self.theme.currentText() == "Светлая" else "dark"
         self.settings["font_size"] = int(self.font_size.currentText())
         save_ui_settings(self.settings)
         apply_ui_theme(self.app, self.settings)
@@ -929,6 +932,20 @@ class MonitoringTab(QWidget):
         if item:
             self.on_select(item)
 
+    @staticmethod
+    def _extract_confidence(details: str, fallback: float = 0.0) -> float:
+        if fallback > 0.0:
+            return fallback
+        m = re.search(r"conf\s*([0-9]+(?:\.[0-9]+)?)", details or "", flags=re.IGNORECASE)
+        if not m:
+            m = re.search(r"\(([0-9]+(?:\.[0-9]+)?)\)", details or "")
+        if m:
+            try:
+                return float(m.group(1))
+            except Exception:
+                return fallback
+        return fallback
+
     def process_active_mode(self):
         # Последовательный пайплайн:
         # 1) Face-first presence -> 2) clip identification (liveness/match на сервере)
@@ -1007,7 +1024,7 @@ class MonitoringTab(QWidget):
                         access.user_name = getattr(door_resp, "user_name", "Unknown")
                         access.granted = getattr(door_resp, "access_granted", False)
                         access.message = getattr(door_resp, "reason", "")
-                        access.final_confidence = float(getattr(door_resp, "confidence", 0.0))
+                        access.final_confidence = self._extract_confidence(getattr(door_resp, "reason", ""), float(getattr(door_resp, "confidence", 0.0)))
                         self.append_pipeline_log(
                             f"[DOOR] stage={getattr(door_resp, 'stage', 0)} conf={access.final_confidence:.2f} "
                             f"flags={list(getattr(door_resp, 'flags', []))} reason={access.message}"
@@ -1047,7 +1064,7 @@ class MonitoringTab(QWidget):
                             access.user_name = getattr(access_v2, "user_name", "Unknown")
                             access.granted = getattr(access_v2, "granted", False)
                             access.message = getattr(access_v2, "reason", "")
-                            access.final_confidence = float(getattr(access_v2, "confidence", 0.0))
+                            access.final_confidence = self._extract_confidence(getattr(access_v2, "reason", ""), float(getattr(access_v2, "confidence", 0.0)))
 
                 except Exception as e:
                     self.pipeline_inflight = False
@@ -1066,7 +1083,7 @@ class MonitoringTab(QWidget):
                 t.set_overlay(msg, color)
 
                 details = getattr(access, "message", "")
-                conf = float(getattr(access, 'final_confidence', 0.0))
+                conf = self._extract_confidence(details, float(getattr(access, 'final_confidence', 0.0)))
                 self.append_pipeline_log(
                     f"[{dev_id}] {'ДОСТУП' if access.granted else 'ОТКАЗ'} | этап: идентификация | "
                     f"уверенность: {conf:.2f} | пользователь: {access.user_name} | причина: {details}"

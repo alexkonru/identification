@@ -104,10 +104,40 @@ impl GatewayService {
         });
 
         match timeout(self.vision_rpc_timeout, client.process_face(request)).await {
-            Err(_) => Err(Status::deadline_exceeded(format!(
-                "Vision service timeout after {} ms",
-                self.vision_rpc_timeout.as_millis()
-            ))),
+            Err(_) => {
+                // one lightweight retry to avoid startup race false negatives
+                let mut retry_client = VisionClient::new(self.vision_channel.clone());
+                let retry_request = Request::new(ImageFrame {
+                    content: image.to_vec(),
+                });
+                match timeout(
+                    self.vision_rpc_timeout,
+                    retry_client.process_face(retry_request),
+                )
+                .await
+                {
+                    Err(_) => Err(Status::deadline_exceeded(format!(
+                        "Vision service timeout after {} ms",
+                        self.vision_rpc_timeout.as_millis()
+                    ))),
+                    Ok(result) => match result {
+                        Ok(response) => {
+                            let res = response.into_inner();
+                            if res.detected && !res.embedding.is_empty() {
+                                Ok(Some(FaceProcessResult {
+                                    embedding: res.embedding,
+                                    liveness_score: res.liveness_score,
+                                    is_live: res.is_live,
+                                    provider: res.execution_provider,
+                                }))
+                            } else {
+                                Ok(None)
+                            }
+                        }
+                        Err(e) => Err(Status::internal(format!("Vision service error: {}", e))),
+                    },
+                }
+            }
             Ok(result) => match result {
                 Ok(response) => {
                     let res = response.into_inner();
@@ -947,10 +977,17 @@ impl Gatekeeper for GatewayService {
             "Unknown".to_string()
         };
 
-        if !response.face_live {
+        let min_face_liveness = std::env::var("ACCESS_MIN_FACE_LIVENESS")
+            .ok()
+            .and_then(|v| v.parse::<f32>().ok())
+            .unwrap_or(0.90)
+            .clamp(0.0, 1.0);
+        if !response.face_live || response.face_liveness_score < min_face_liveness {
+            response.user_name = "Unknown".into();
             response.message = format!(
-                "Liveness failed: {:.2}% ({})",
+                "Liveness failed: {:.2}% (< {:.2}) ({})",
                 response.face_liveness_score * 100.0,
+                min_face_liveness * 100.0,
                 face_info.provider
             );
             response.decision_stage = "liveness".into();
