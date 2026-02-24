@@ -5,7 +5,7 @@ members = [
     "vision-worker",
     "audio-worker",
     "shared",
-    "hardware-controller",
+    "door-agent",
 ]
 
 [workspace.package]
