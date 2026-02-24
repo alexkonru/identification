@@ -544,6 +544,18 @@ impl Gatekeeper for GatewayService {
             .execute(&self.pool)
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
+
+        let remaining: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users")
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+        if remaining == 0 {
+            sqlx::query("SELECT setval(pg_get_serial_sequence('users', 'id'), 1, false)")
+                .execute(&self.pool)
+                .await
+                .map_err(|e| Status::internal(e.to_string()))?;
+        }
+
         Ok(Response::new(Empty {}))
     }
 

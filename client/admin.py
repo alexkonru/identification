@@ -10,7 +10,7 @@ import numpy as np
 import PyQt6.QtCore as QtCore
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QTabWidget, QListWidget, QLabel, QLineEdit, QPushButton,
+    QTabWidget, QListWidget, QListWidgetItem, QLabel, QLineEdit, QPushButton,
     QGroupBox, QComboBox, QMessageBox, QInputDialog, QDialog, QFormLayout,
     QTreeWidget, QTreeWidgetItem, QTreeWidgetItemIterator, QHeaderView, QSplitter, QCheckBox, QTableWidget, QTableWidgetItem,
     QScrollArea, QTextEdit, QGridLayout
@@ -334,73 +334,246 @@ class SystemTab(QWidget):
         except Exception as e: QMessageBox.critical(self, "Ошибка", str(e))
 
 
-class PersonnelTab(QWidget):
-    def __init__(self, client):
-        super().__init__()
+class RegistrationCameraDialog(QDialog):
+    def __init__(self, client, parent=None):
+        super().__init__(parent)
         self.client = client
+        self.setWindowTitle("Регистрация пользователя")
+        self.resize(900, 620)
         self.cap = None
-        self.timer = QTimer()
+        self.timer = QTimer(self)
         self.timer.timeout.connect(self.update_frame)
         self.current_frame = None
-        self.setup_ui()
 
-    def setup_ui(self):
-        layout = QHBoxLayout(self)
-        left = QVBoxLayout()
-        left.addWidget(QLabel("<b>Сотрудники</b>"))
-        self.user_list = QListWidget()
-        left.addWidget(self.user_list)
-        self.btn_delete = QPushButton("🗑 Удалить")
-        self.btn_delete.clicked.connect(self.delete_user)
-        left.addWidget(self.btn_delete)
-        layout.addLayout(left, 1)
+        layout = QVBoxLayout(self)
+        self.name_input = QLineEdit()
+        self.name_input.setPlaceholderText("ФИО сотрудника")
+        layout.addWidget(self.name_input)
 
-        right = QGroupBox("Регистрация")
-        rl = QVBoxLayout()
-        self.name_input = QLineEdit(); self.name_input.setPlaceholderText("ФИО")
-        rl.addWidget(self.name_input)
-        self.video_label = QLabel("Камера..."); self.video_label.setMinimumSize(320, 240); self.video_label.setAlignment(Qt.AlignmentFlag.AlignCenter); self.video_label.setStyleSheet("background-color: #111;")
-        rl.addWidget(self.video_label)
-        self.btn_capture = QPushButton("📸 Создать"); self.btn_capture.clicked.connect(self.register_user)
-        rl.addWidget(self.btn_capture)
-        right.setLayout(rl)
-        layout.addWidget(right, 2)
-        self.refresh_users()
+        self.video_label = QLabel("Камера выключена")
+        self.video_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.video_label.setMinimumSize(760, 480)
+        self.video_label.setStyleSheet("background:#111;border:1px solid #444;")
+        layout.addWidget(self.video_label)
+
+        btns = QHBoxLayout()
+        self.btn_start = QPushButton("🎥 Запустить камеру")
+        self.btn_start.clicked.connect(self.start_camera)
+        self.btn_capture = QPushButton("📸 Зарегистрировать")
+        self.btn_capture.clicked.connect(self.register_user)
+        self.btn_stop = QPushButton("⏹ Остановить")
+        self.btn_stop.clicked.connect(self.stop_camera)
+        btns.addWidget(self.btn_start)
+        btns.addWidget(self.btn_capture)
+        btns.addWidget(self.btn_stop)
+        layout.addLayout(btns)
 
     def start_camera(self):
+        if self.cap and self.cap.isOpened():
+            return
         self.cap = cv2.VideoCapture(0)
         self.timer.start(30)
 
     def stop_camera(self):
         self.timer.stop()
-        if self.cap: self.cap.release()
+        if self.cap:
+            self.cap.release()
+            self.cap = None
 
     def update_frame(self):
         if self.cap and self.cap.isOpened():
-            ret, frame = self.cap.read()
-            if ret:
+            ok, frame = self.cap.read()
+            if ok:
                 self.current_frame = frame
                 rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 h, w, ch = rgb.shape
-                img = QImage(rgb.data, w, h, ch*w, QImage.Format.Format_RGB888).copy()
-                self.video_label.setPixmap(QPixmap.fromImage(img).scaled(self.video_label.size(), Qt.AspectRatioMode.KeepAspectRatio))
-
-    def refresh_users(self):
-        self.user_list.clear()
-        for u in self.client.list_users(): self.user_list.addItem(f"{u.id}: {u.name}")
+                img = QImage(rgb.data, w, h, ch * w, QImage.Format.Format_RGB888).copy()
+                self.video_label.setPixmap(QPixmap.fromImage(img).scaled(
+                    self.video_label.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation
+                ))
 
     def register_user(self):
-        name = self.name_input.text()
-        if name and self.current_frame is not None:
-            _, enc = cv2.imencode('.jpg', self.current_frame)
-            try: self.client.register_user(name, enc.tobytes()); self.refresh_users(); self.name_input.clear()
-            except Exception as e: QMessageBox.critical(self, "Error", str(e))
+        name = self.name_input.text().strip()
+        if not name:
+            QMessageBox.warning(self, "Проверка", "Введите имя пользователя")
+            return
+        if self.current_frame is None:
+            QMessageBox.warning(self, "Проверка", "Сначала запустите камеру и получите кадр")
+            return
+        ok, enc = cv2.imencode('.jpg', self.current_frame)
+        if not ok:
+            QMessageBox.warning(self, "Проверка", "Не удалось закодировать кадр")
+            return
+        self.client.register_user(name, enc.tobytes())
+        QMessageBox.information(self, "OK", "Пользователь зарегистрирован")
+        self.accept()
+
+    def closeEvent(self, event):
+        self.stop_camera()
+        super().closeEvent(event)
+
+
+class PersonnelAccessTab(QWidget):
+    def __init__(self, client):
+        super().__init__()
+        self.client = client
+        self.users_cache = []
+        self.setup_ui()
+        self.refresh_all()
+        self.refresh_timer = QTimer(self)
+        self.refresh_timer.timeout.connect(self.refresh_users_only)
+        self.refresh_timer.start(3000)
+
+    def setup_ui(self):
+        main = QHBoxLayout(self)
+        main.setContentsMargins(12, 12, 12, 12)
+        main.setSpacing(8)
+
+        left = QVBoxLayout()
+        left.setSpacing(6)
+        left.addWidget(QLabel("<b>Пользователи</b>"))
+        self.user_list = QListWidget()
+        self.user_list.currentRowChanged.connect(self.load_user_rights)
+        left.addWidget(self.user_list)
+
+        actions = QHBoxLayout()
+        self.btn_add = QPushButton("➕ Добавить")
+        self.btn_add.clicked.connect(self.open_registration_dialog)
+        self.btn_del = QPushButton("🗑 Удалить")
+        self.btn_del.clicked.connect(self.delete_user)
+        self.btn_refresh = QPushButton("🔄 Обновить")
+        self.btn_refresh.clicked.connect(self.refresh_all)
+        actions.addWidget(self.btn_add)
+        actions.addWidget(self.btn_del)
+        actions.addWidget(self.btn_refresh)
+        left.addLayout(actions)
+
+        right = QVBoxLayout()
+        right.setSpacing(6)
+        right.addWidget(QLabel("<b>Права доступа (до 7±2 комнат на пользователя)</b>"))
+        self.rights_tree = QTreeWidget()
+        self.rights_tree.setHeaderLabels(["Зона/Комната"])
+        right.addWidget(self.rights_tree)
+
+        self.ui_scale = QComboBox()
+        self.ui_scale.addItems(["Компактный", "Стандарт", "Крупный"])
+        self.ui_scale.setCurrentText("Стандарт")
+        self.ui_scale.currentTextChanged.connect(self.apply_ui_scale)
+        self.layout_ratio = QComboBox()
+        self.layout_ratio.addItems(["Золотое сечение 38/62", "Равные панели 50/50"])
+        self.layout_ratio.currentTextChanged.connect(self.apply_layout_ratio)
+
+        controls = QHBoxLayout()
+        controls.addWidget(QLabel("Масштаб UI:"))
+        controls.addWidget(self.ui_scale)
+        controls.addSpacing(12)
+        controls.addWidget(QLabel("Разметка:"))
+        controls.addWidget(self.layout_ratio)
+        controls.addStretch()
+        self.btn_save = QPushButton("💾 Сохранить права")
+        self.btn_save.clicked.connect(self.save_rights)
+        controls.addWidget(self.btn_save)
+        right.addLayout(controls)
+
+        self.splitter = QSplitter(Qt.Orientation.Horizontal)
+        left_wrap = QWidget(); left_wrap.setLayout(left)
+        right_wrap = QWidget(); right_wrap.setLayout(right)
+        self.splitter.addWidget(left_wrap)
+        self.splitter.addWidget(right_wrap)
+        main.addWidget(self.splitter)
+        self.apply_layout_ratio()
+
+    def apply_layout_ratio(self):
+        total = max(self.width(), 1000)
+        if self.layout_ratio.currentText().startswith("Золотое"):
+            self.splitter.setSizes([int(total * 0.38), int(total * 0.62)])
+        else:
+            self.splitter.setSizes([int(total * 0.5), int(total * 0.5)])
+
+    def apply_ui_scale(self):
+        scale_map = {"Компактный": 11, "Стандарт": 13, "Крупный": 15}
+        size = scale_map.get(self.ui_scale.currentText(), 13)
+        self.setStyleSheet(f"QWidget {{ font-size: {size}px; }}")
+
+    def refresh_users_only(self):
+        current_uid = None
+        item = self.user_list.currentItem()
+        if item:
+            current_uid = item.data(Qt.ItemDataRole.UserRole)
+        users = list(self.client.list_users())
+        if [(u.id, u.name) for u in users] == [(u.id, u.name) for u in self.users_cache]:
+            return
+        self.users_cache = users
+        self.user_list.blockSignals(True)
+        self.user_list.clear()
+        sel_row = -1
+        for idx, u in enumerate(users):
+            row = QListWidgetItem(f"#{idx+1} • {u.name} (id={u.id})")
+            row.setData(Qt.ItemDataRole.UserRole, u.id)
+            self.user_list.addItem(row)
+            if current_uid is not None and u.id == current_uid:
+                sel_row = idx
+        self.user_list.blockSignals(False)
+        if sel_row >= 0:
+            self.user_list.setCurrentRow(sel_row)
+        elif self.user_list.count() > 0:
+            self.user_list.setCurrentRow(0)
+
+    def refresh_all(self):
+        self.refresh_users_only()
+        self.load_user_rights(self.user_list.currentRow())
+
+    def open_registration_dialog(self):
+        dlg = RegistrationCameraDialog(self.client, self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self.refresh_all()
 
     def delete_user(self):
         item = self.user_list.currentItem()
-        if item:
-            uid = int(item.text().split(':')[0])
-            self.client.remove_user(uid); self.refresh_users()
+        if not item:
+            return
+        uid = item.data(Qt.ItemDataRole.UserRole)
+        self.client.remove_user(uid)
+        self.refresh_all()
+
+    def load_user_rights(self, _row):
+        item = self.user_list.currentItem()
+        if not item:
+            self.rights_tree.clear()
+            return
+        uid = item.data(Qt.ItemDataRole.UserRole)
+        allowed = set(self.client.get_user_access(uid).allowed_room_ids)
+        zones = self.client.list_zones()
+        rooms = self.client.list_rooms()
+        z_map = {z.id: QTreeWidgetItem([z.name]) for z in zones}
+        for r in rooms:
+            ri = QTreeWidgetItem([r.name])
+            ri.setData(0, Qt.ItemDataRole.UserRole, r.id)
+            ri.setCheckState(0, Qt.CheckState.Checked if r.id in allowed else Qt.CheckState.Unchecked)
+            if r.zone_id in z_map:
+                z_map[r.zone_id].addChild(ri)
+        self.rights_tree.clear()
+        for z in z_map.values():
+            self.rights_tree.addTopLevelItem(z)
+            z.setExpanded(True)
+
+    def save_rights(self):
+        item = self.user_list.currentItem()
+        if not item:
+            return
+        uid = item.data(Qt.ItemDataRole.UserRole)
+        allowed = []
+        it = QTreeWidgetItemIterator(self.rights_tree)
+        while it.value():
+            node = it.value()
+            if node.childCount() == 0 and node.checkState(0) == Qt.CheckState.Checked:
+                allowed.append(node.data(0, Qt.ItemDataRole.UserRole))
+            it += 1
+        # Miller: предупреждаем, если слишком много разрешённых комнат
+        if len(allowed) > 9:
+            QMessageBox.warning(self, "UX-подсказка", "Рекомендуется не более 7±2 комнат на пользователя.")
+        self.client.set_access_rules(uid, allowed)
+        QMessageBox.information(self, "OK", "Права сохранены")
 
 class InfrastructureTab(QWidget):
     def __init__(self, client):
@@ -491,39 +664,6 @@ class InfrastructureTab(QWidget):
             if data[1].device_type == "lock": self.door_controls.setVisible(True)
     def control_door(self, cmd):
         if hasattr(self, 'current_dev_id'): self.client.control_door(self.current_dev_id, cmd)
-
-class AccessTab(QWidget):
-    def __init__(self, client):
-        super().__init__(); self.client = client; self.setup_ui()
-    def setup_ui(self):
-        layout = QHBoxLayout(self); left = QVBoxLayout(); left.addWidget(QLabel("1. Выберите пользователя"))
-        self.user_list = QListWidget(); self.user_list.currentItemChanged.connect(self.load_user_rights); left.addWidget(self.user_list); layout.addLayout(left, 1)
-        right = QVBoxLayout(); right.addWidget(QLabel("2. Отметьте доступные помещения"))
-        self.rights_tree = QTreeWidget(); self.rights_tree.setHeaderLabels(["Помещение"]); right.addWidget(self.rights_tree)
-        self.btn_save = QPushButton("💾 Сохранить права"); self.btn_save.clicked.connect(self.save_rights); right.addWidget(self.btn_save); layout.addLayout(right, 2)
-        self.refresh()
-    def refresh(self):
-        self.user_list.clear(); 
-        for u in self.client.list_users(): self.user_list.addItem(f"{u.id}: {u.name}")
-    def load_user_rights(self, current, prev):
-        if not current: return
-        self.rights_tree.clear(); uid = int(current.text().split(':')[0]); allowed = set(self.client.get_user_access(uid).allowed_room_ids)
-        zones = self.client.list_zones(); rooms = self.client.list_rooms(); z_map = {z.id: QTreeWidgetItem([z.name]) for z in zones}
-        for r in rooms:
-            item = QTreeWidgetItem([r.name]); item.setCheckState(0, Qt.CheckState.Checked if r.id in allowed else Qt.CheckState.Unchecked)
-            item.setData(0, Qt.ItemDataRole.UserRole, r.id)
-            if r.zone_id in z_map: z_map[r.zone_id].addChild(item)
-        for z in z_map.values(): self.rights_tree.addTopLevelItem(z); z.setExpanded(True)
-    def save_rights(self):
-        item = self.user_list.currentItem()
-        if not item: return
-        uid = int(item.text().split(':')[0]); allowed = []
-        it = QTreeWidgetItemIterator(self.rights_tree)
-        while it.value():
-            if it.value().checkState(0) == Qt.CheckState.Checked and it.value().childCount() == 0:
-                allowed.append(it.value().data(0, Qt.ItemDataRole.UserRole))
-            it += 1
-        self.client.set_access_rules(uid, allowed); QMessageBox.information(self, "OK", "Saved")
 
 class LogTab(QWidget):
     def __init__(self, client):
@@ -1010,22 +1150,19 @@ class VideoThread(QThread):
 class AdminApp(QMainWindow):
     def __init__(self, client):
         super().__init__(); self.setWindowTitle("Biometry Admin Panel 2.0"); self.resize(1200, 800); self.client = client
-        self.tabs = QTabWidget(); self.personnel_tab = PersonnelTab(self.client); self.monitor_tab = MonitoringTab(self.client)
+        self.tabs = QTabWidget(); self.personnel_tab = PersonnelAccessTab(self.client); self.monitor_tab = MonitoringTab(self.client)
         self.tabs.addTab(self.monitor_tab, "📹 Мониторинг")
         self.tabs.addTab(SystemTab(self.client), "⚙️ Система")
-        self.tabs.addTab(self.personnel_tab, "👥 Персонал")
+        self.tabs.addTab(self.personnel_tab, "👥 Персонал и доступ")
         self.tabs.addTab(InfrastructureTab(self.client), "🏗 Инфраструктура")
-        self.tabs.addTab(AccessTab(self.client), "🔐 Доступ")
         self.tabs.addTab(LogTab(self.client), "📜 Журнал")
         self.tabs.addTab(HelpTab(), "❓ Справка")
         self.tabs.currentChanged.connect(self.on_tab_change); self.setCentralWidget(self.tabs)
     def on_tab_change(self, index):
-        if self.tabs.widget(index) == self.personnel_tab: self.personnel_tab.start_camera()
-        else: self.personnel_tab.stop_camera()
         if self.tabs.widget(index) == self.monitor_tab: self.monitor_tab.restart_videos()
         else: self.monitor_tab.stop_all_videos()
     def closeEvent(self, event):
-        self.personnel_tab.stop_camera(); self.monitor_tab.stop_all_videos(); event.accept()
+        self.monitor_tab.stop_all_videos(); event.accept()
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
