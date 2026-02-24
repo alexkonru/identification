@@ -9,7 +9,6 @@ def check_hardware(address):
         channel = grpc.insecure_channel(address)
         stub = biometry_pb2_grpc.GatekeeperStub(channel)
         
-        # Check Hardware (Scan)
         print("Calling ScanHardware...")
         response = stub.ScanHardware(biometry_pb2.Empty())
         print(f"Found {len(response.found_devices)} devices.")
@@ -23,7 +22,6 @@ def check_hardware(address):
         for d in response_list.devices:
             print(f" - ID: {d.id}, Name: {d.name}, Type: {d.device_type}, Conn: {d.connection_string}")
 
-        # Check Audio Status via Gateway
         print("\nChecking System Status...")
         status = stub.GetSystemStatus(biometry_pb2.Empty())
         print(f"Audio Status: {status.audio.message} (Online: {status.audio.online})")
