@@ -1,12 +1,19 @@
+import os
+import json
+import subprocess
 import sys
+import time
+import uuid
+from pathlib import Path
 import cv2
 import grpc
+import numpy as np
 import PyQt6.QtCore as QtCore
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QTabWidget, QListWidget, QLabel, QLineEdit, QPushButton,
+    QTabWidget, QListWidget, QListWidgetItem, QLabel, QLineEdit, QPushButton,
     QGroupBox, QComboBox, QMessageBox, QInputDialog, QDialog, QFormLayout,
-    QTreeWidget, QTreeWidgetItem, QHeaderView, QSplitter, QCheckBox, QTableWidget, QTableWidgetItem,
+    QTreeWidget, QTreeWidgetItem, QTreeWidgetItemIterator, QHeaderView, QSplitter, QCheckBox, QTableWidget, QTableWidgetItem,
     QScrollArea, QTextEdit, QGridLayout
 )
 from PyQt6.QtGui import QImage, QPixmap, QPalette, QColor, QFont, QIcon
@@ -15,7 +22,36 @@ from PyQt6.QtCore import Qt, QTimer, QSize, QThread, pyqtSignal, QMutex
 import biometry_pb2
 import biometry_pb2_grpc
 
-# --- Dark Theme & Style ---
+
+def parse_kv_env_file(path: Path) -> dict:
+    cfg = {}
+    if not path.exists():
+        return cfg
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        cfg[key.strip()] = value.strip()
+    return cfg
+
+# --- Theme & UI Settings ---
+UI_SETTINGS_PATH = Path.home() / ".biometry_ui_settings.json"
+
+
+def load_ui_settings() -> dict:
+    if not UI_SETTINGS_PATH.exists():
+        return {"theme": "dark", "font_size": 13}
+    try:
+        return json.loads(UI_SETTINGS_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return {"theme": "dark", "font_size": 13}
+
+
+def save_ui_settings(data: dict):
+    UI_SETTINGS_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 def set_dark_theme(app):
     app.setStyle("Fusion")
     palette = QPalette()
@@ -34,21 +70,80 @@ def set_dark_theme(app):
     palette.setColor(QPalette.ColorRole.HighlightedText, Qt.GlobalColor.black)
     app.setPalette(palette)
 
+
+def set_light_theme(app):
+    app.setStyle("Fusion")
+    app.setPalette(app.style().standardPalette())
+
+
+def apply_ui_theme(app, settings: dict):
+    if settings.get("theme", "dark") == "light":
+        set_light_theme(app)
+    else:
+        set_dark_theme(app)
+    font = app.font()
+    font.setPointSize(int(settings.get("font_size", 13)))
+    app.setFont(font)
+
 # --- gRPC Client Wrapper ---
 class BiometryClient:
     def __init__(self, address='127.0.0.1:50051'):
+        self.address = address
         self.channel = grpc.insecure_channel(address)
         self.stub = biometry_pb2_grpc.GatekeeperStub(self.channel)
+        host = address.split(':')[0]
+        self.vision_channel = grpc.insecure_channel(f"{host}:50052")
+        self.audio_channel = grpc.insecure_channel(f"{host}:50053")
+        self.vision_stub = biometry_pb2_grpc.VisionStub(self.vision_channel)
+        self.audio_stub = biometry_pb2_grpc.AudioStub(self.audio_channel)
+        self.door_channel = grpc.insecure_channel(f"{host}:50054")
+        self.door_stub = getattr(biometry_pb2_grpc, "DoorAgentStub", None)
+        self.door_stub = self.door_stub(self.door_channel) if self.door_stub else None
+
+    def wait_until_ready(self, total_timeout=45.0, probe_timeout=2.0):
+        # Для Docker-старта gateway может подняться не мгновенно:
+        # контейнер уже существует, но gRPC сервис ещё инициализируется.
+        # Важно: GetSystemStatus внутри gateway опрашивает audio/vision workers,
+        # поэтому при их старте/недоступности этот RPC может таймаутить,
+        # даже если сам gateway уже доступен.
+        deadline = time.time() + total_timeout
+        while time.time() < deadline:
+            try:
+                grpc.channel_ready_future(self.channel).result(timeout=probe_timeout)
+            except grpc.FutureTimeoutError:
+                time.sleep(0.5)
+                continue
+
+            try:
+                # Fast probe when available.
+                self.stub.GetSystemStatus(biometry_pb2.Empty(), timeout=probe_timeout)
+                return True
+            except grpc.RpcError as e:
+                # Gateway может быть уже поднят, но probe зависеть от worker'ов.
+                # В таких кейсах считаем подключение к gateway успешным.
+                if e.code() in {
+                    grpc.StatusCode.DEADLINE_EXCEEDED,
+                    grpc.StatusCode.UNIMPLEMENTED,
+                    grpc.StatusCode.UNKNOWN,
+                    grpc.StatusCode.INTERNAL,
+                }:
+                    return True
+                time.sleep(0.5)
+
+        return False
+
 
     def list_users(self):
-        try:
-            return self.stub.ListUsers(biometry_pb2.ListUsersRequest()).users
-        except grpc.RpcError as e:
-            print(f"RPC Error: {e}")
-            return []
+        # Gateway can be up slightly later than UI tabs initialization.
+        for _ in range(3):
+            try:
+                return self.stub.ListUsers(biometry_pb2.ListUsersRequest(), timeout=2.0).users
+            except grpc.RpcError:
+                time.sleep(0.4)
+        return []
 
     def register_user(self, name, image_bytes):
-        return self.stub.RegisterUser(biometry_pb2.RegisterUserRequest(name=name, image=image_bytes))
+        return self.stub.RegisterUser(biometry_pb2.RegisterUserRequest(name=name, images=[image_bytes], voices=[]))
 
     def remove_user(self, user_id):
         return self.stub.RemoveUser(biometry_pb2.IdRequest(id=user_id))
@@ -73,16 +168,26 @@ class BiometryClient:
             name=name, room_id=room_id, device_type=device_type, connection_string=connection_string
         ))
 
-    def set_access_rules(self, user_id, room_ids):
-        return self.stub.SetAccessRules(biometry_pb2.SetAccessRulesRequest(
-            user_id=user_id, allowed_room_ids=room_ids
-        ))
+    @staticmethod
+    def _message_field_map(message_cls):
+        req_fields = getattr(message_cls, "DESCRIPTOR", None)
+        return req_fields.fields_by_name if req_fields else {}
+
+    def set_access_rules(self, user_id, room_ids, zone_ids=None):
+        if zone_ids is None:
+            zone_ids = []
+        field_map = self._message_field_map(biometry_pb2.SetAccessRulesRequest)
+        kwargs = {"user_id": user_id, "allowed_room_ids": room_ids}
+        if "allowed_zone_ids" in field_map:
+            kwargs["allowed_zone_ids"] = zone_ids
+        return self.stub.SetAccessRules(biometry_pb2.SetAccessRulesRequest(**kwargs))
 
     def get_user_access(self, user_id):
-        return self.stub.GetUserAccess(biometry_pb2.IdRequest(id=user_id)).allowed_room_ids
+        return self.stub.GetUserAccess(biometry_pb2.IdRequest(id=user_id))
+
 
     def get_system_status(self):
-        return self.stub.GetSystemStatus(biometry_pb2.Empty())
+        return self.stub.GetSystemStatus(biometry_pb2.Empty(), timeout=3.0)
 
     def control_service(self, service, action):
         return self.stub.ControlService(biometry_pb2.ControlServiceRequest(service_name=service, action=action))
@@ -95,6 +200,51 @@ class BiometryClient:
 
     def get_logs(self, limit=50, offset=0):
         return self.stub.GetLogs(biometry_pb2.GetLogsRequest(limit=limit, offset=offset)).logs
+
+    def submit_door_observation(self, session_id, device_id, frame, audio=b"", sample_rate=16000, timestamp_ms=0):
+        if self.door_stub is None:
+            return None
+        req_cls = getattr(biometry_pb2, "DoorObservationRequest", None)
+        if req_cls is None:
+            return None
+        return self.door_stub.SubmitObservation(req_cls(
+            session_id=session_id,
+            device_id=device_id,
+            frame=frame,
+            timestamp_ms=timestamp_ms,
+            audio=audio or b"",
+            audio_sample_rate=sample_rate,
+        ))
+
+    def check_access(self, device_id, image_bytes, audio_bytes=None, sample_rate=16000):
+        field_map = self._message_field_map(biometry_pb2.CheckAccessRequest)
+        kwargs = {"device_id": device_id, "image": image_bytes}
+        if "audio" in field_map:
+            kwargs["audio"] = audio_bytes or b""
+        if "audio_sample_rate" in field_map:
+            kwargs["audio_sample_rate"] = sample_rate
+        return self.stub.CheckAccess(biometry_pb2.CheckAccessRequest(**kwargs))
+
+    def check_access_v2(self, session_id, device_id, frames, audio_bytes=None, sample_rate=16000, frame_timestamps_ms=None):
+        if not hasattr(self.stub, "CheckAccessV2"):
+            return None
+        req_cls = getattr(biometry_pb2, "CheckAccessRequestV2", None)
+        if req_cls is None:
+            return None
+        field_map = self._message_field_map(req_cls)
+        kwargs = {
+            "session_id": session_id,
+            "device_id": device_id,
+            "frames": frames,
+            "audio": audio_bytes or b"",
+            "audio_sample_rate": sample_rate,
+        }
+        if frame_timestamps_ms is None:
+            frame_timestamps_ms = []
+        if "frame_timestamps_ms" in field_map:
+            kwargs["frame_timestamps_ms"] = frame_timestamps_ms
+        return self.stub.CheckAccessV2(req_cls(**kwargs))
+
 
 # --- UI Components ---
 
@@ -109,38 +259,41 @@ class SystemTab(QWidget):
 
     def init_ui(self):
         layout = QVBoxLayout(self)
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        content = QWidget()
-        self.status_layout = QVBoxLayout(content)
-        self.status_widgets = {}
-        for svc in ["Gateway", "Database", "Vision", "Audio"]:
-            g = QGroupBox(f"{svc} Service")
-            l = QFormLayout()
-            lbl_status = QLabel("Checking...")
-            lbl_device = QLabel("-")
-            lbl_msg = QLabel("-")
-            lbl_msg.setWordWrap(True)
-            l.addRow("Status:", lbl_status)
-            l.addRow("Device:", lbl_device)
-            l.addRow("Details:", lbl_msg)
-            g.setLayout(l)
-            self.status_layout.addWidget(g)
-            self.status_widgets[svc.lower()] = (lbl_status, lbl_device, lbl_msg)
-        scroll.setWidget(content)
-        layout.addWidget(scroll, 2)
 
-        svc_group = QGroupBox("Управление службами")
-        svc_layout = QFormLayout()
-        for name in ["vision-worker", "audio-worker"]:
-            hbox = QHBoxLayout()
-            btn_start = QPushButton("Start"); btn_start.clicked.connect(lambda _, n=name: self.control_service(n, "start"))
-            btn_stop = QPushButton("Stop"); btn_stop.clicked.connect(lambda _, n=name: self.control_service(n, "stop"))
-            btn_restart = QPushButton("Restart"); btn_restart.clicked.connect(lambda _, n=name: self.control_service(n, "restart"))
-            hbox.addWidget(btn_start); hbox.addWidget(btn_stop); hbox.addWidget(btn_restart)
-            svc_layout.addRow(name, hbox)
-        svc_group.setLayout(svc_layout)
-        layout.addWidget(svc_group, 1)
+        status_group = QGroupBox("Статус сервисов")
+        grid = QGridLayout()
+        grid.setContentsMargins(8, 8, 8, 8)
+        grid.setHorizontalSpacing(14)
+        grid.setVerticalSpacing(8)
+        self.status_widgets = {}
+        labels = [
+            ("gateway", "Шлюз"),
+            ("database", "БД"),
+            ("vision", "Лицо"),
+            ("audio", "Голос"),
+        ]
+        hdr1 = QLabel("<b>Сервис</b>")
+        hdr2 = QLabel("<b>Статус</b>")
+        hdr3 = QLabel("<b>Устройство</b>")
+        hdr4 = QLabel("<b>Сообщение</b>")
+        grid.addWidget(hdr1, 0, 0)
+        grid.addWidget(hdr2, 0, 1)
+        grid.addWidget(hdr3, 0, 2)
+        grid.addWidget(hdr4, 0, 3)
+        for i, (key, title) in enumerate(labels, start=1):
+            title_lbl = QLabel(title)
+            status_lbl = QLabel("⏳")
+            device_lbl = QLabel("-")
+            msg_lbl = QLabel("-")
+            msg_lbl.setWordWrap(False)
+            msg_lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            grid.addWidget(title_lbl, i, 0)
+            grid.addWidget(status_lbl, i, 1)
+            grid.addWidget(device_lbl, i, 2)
+            grid.addWidget(msg_lbl, i, 3)
+            self.status_widgets[key] = (status_lbl, device_lbl, msg_lbl)
+        status_group.setLayout(grid)
+        layout.addWidget(status_group, 2)
 
         hw_group = QGroupBox("Управление оборудованием")
         hw_layout = QVBoxLayout()
@@ -152,21 +305,54 @@ class SystemTab(QWidget):
         hw_group.setLayout(hw_layout)
         layout.addWidget(hw_group, 1)
 
+        # Runtime-конфигурация запуска (CPU/GPU режимы)
+        rt_group = QGroupBox("Runtime настройки (CPU/GPU)")
+        rt_layout = QFormLayout()
+
+        self.lbl_runtime_info = QLabel("Ожидание статуса...")
+        self.lbl_runtime_info.setWordWrap(True)
+        self.lbl_runtime_info.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        rt_layout.addRow("Текущий runtime:", self.lbl_runtime_info)
+        rt_group.setLayout(rt_layout)
+        layout.addWidget(rt_group, 1)
+
     def refresh_status(self):
         try:
             status = self.client.get_system_status()
             def update(key, s_obj):
                 lbl_s, lbl_d, lbl_m = self.status_widgets[key]
-                lbl_s.setText("🟢 ONLINE" if s_obj.online else "🔴 OFFLINE")
-                lbl_d.setText(f"🖥️ {s_obj.device}")
+                lbl_s.setText("🟢 Онлайн" if s_obj.online else "🔴 Оффлайн")
+                lbl_d.setText(s_obj.device)
                 lbl_m.setText(s_obj.message)
                 if not s_obj.online: lbl_s.setStyleSheet("color: red; font-weight: bold")
                 else: lbl_s.setStyleSheet("color: #00ff00; font-weight: bold")
             update("gateway", status.gateway); update("database", status.database); update("vision", status.vision); update("audio", status.audio)
+
+            runtime_file = Path(__file__).resolve().parents[1] / ".server_runtime.env"
+            runtime_cfg = parse_kv_env_file(runtime_file)
+
+            vision_threads = runtime_cfg.get("VISION_INTRA_THREADS", "-")
+            audio_threads = runtime_cfg.get("AUDIO_INTRA_THREADS", "-")
+            vision_cpu = runtime_cfg.get("VISION_FORCE_CPU", "?")
+            audio_cpu = runtime_cfg.get("AUDIO_FORCE_CPU", "?")
+            audio_cuda = runtime_cfg.get("AUDIO_USE_CUDA", "?")
+
+            vision_device = status.vision.device or "неизвестно"
+            audio_device = status.audio.device or "неизвестно"
+            mode = "GPU" if ("CUDA" in vision_device.upper() or "CUDA" in audio_device.upper() or audio_cuda == "1") else "CPU"
+
+            self.lbl_runtime_info.setText(
+                f"Выбранный режим: {mode}\n"
+                f"Модуль видео (Vision): устройство={vision_device}, потоки ONNX={vision_threads}, FORCE_CPU={vision_cpu}\n"
+                f"Модуль аудио (Audio): устройство={audio_device}, потоки ONNX={audio_threads}, FORCE_CPU={audio_cpu}, USE_CUDA={audio_cuda}\n"
+                f"Статус Vision: {status.vision.message}\n"
+                f"Статус Audio: {status.audio.message}"
+            )
         except Exception as e:
             for k in self.status_widgets:
-                self.status_widgets[k][0].setText("🔴 CONNECT ERROR")
+                self.status_widgets[k][0].setText("🔴 Ошибка соединения")
                 self.status_widgets[k][2].setText(str(e))
+
 
     def control_service(self, name, action):
         try: self.client.control_service(name, action); QMessageBox.information(self, "Результат", "Команда отправлена")
@@ -179,73 +365,222 @@ class SystemTab(QWidget):
             for d in devs: self.hw_list.addItem(f"Found: {d.name} ({d.device_type}) at {d.connection_string}")
         except Exception as e: QMessageBox.critical(self, "Ошибка", str(e))
 
-class PersonnelTab(QWidget):
-    def __init__(self, client):
-        super().__init__()
+
+class RegistrationCameraDialog(QDialog):
+    def __init__(self, client, parent=None):
+        super().__init__(parent)
         self.client = client
+        self.setWindowTitle("Регистрация пользователя")
+        self.resize(900, 620)
         self.cap = None
-        self.timer = QTimer()
+        self.timer = QTimer(self)
         self.timer.timeout.connect(self.update_frame)
         self.current_frame = None
-        self.setup_ui()
 
-    def setup_ui(self):
-        layout = QHBoxLayout(self)
-        left = QVBoxLayout()
-        left.addWidget(QLabel("<b>Сотрудники</b>"))
-        self.user_list = QListWidget()
-        left.addWidget(self.user_list)
-        self.btn_delete = QPushButton("🗑 Удалить")
-        self.btn_delete.clicked.connect(self.delete_user)
-        left.addWidget(self.btn_delete)
-        layout.addLayout(left, 1)
+        layout = QVBoxLayout(self)
+        self.name_input = QLineEdit()
+        self.name_input.setPlaceholderText("ФИО сотрудника")
+        layout.addWidget(self.name_input)
 
-        right = QGroupBox("Регистрация")
-        rl = QVBoxLayout()
-        self.name_input = QLineEdit(); self.name_input.setPlaceholderText("ФИО")
-        rl.addWidget(self.name_input)
-        self.video_label = QLabel("Камера..."); self.video_label.setMinimumSize(320, 240); self.video_label.setAlignment(Qt.AlignmentFlag.AlignCenter); self.video_label.setStyleSheet("background-color: #111;")
-        rl.addWidget(self.video_label)
-        self.btn_capture = QPushButton("📸 Создать"); self.btn_capture.clicked.connect(self.register_user)
-        rl.addWidget(self.btn_capture)
-        right.setLayout(rl)
-        layout.addWidget(right, 2)
-        self.refresh_users()
+        self.video_label = QLabel("Камера выключена")
+        self.video_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.video_label.setMinimumSize(760, 480)
+        self.video_label.setStyleSheet("background:#111;border:1px solid #444;")
+        layout.addWidget(self.video_label)
+
+        btns = QHBoxLayout()
+        self.btn_start = QPushButton("🎥 Запустить камеру")
+        self.btn_start.clicked.connect(self.start_camera)
+        self.btn_capture = QPushButton("📸 Зарегистрировать")
+        self.btn_capture.clicked.connect(self.register_user)
+        self.btn_stop = QPushButton("⏹ Остановить")
+        self.btn_stop.clicked.connect(self.stop_camera)
+        btns.addWidget(self.btn_start)
+        btns.addWidget(self.btn_capture)
+        btns.addWidget(self.btn_stop)
+        layout.addLayout(btns)
 
     def start_camera(self):
+        if self.cap and self.cap.isOpened():
+            return
         self.cap = cv2.VideoCapture(0)
         self.timer.start(30)
 
     def stop_camera(self):
         self.timer.stop()
-        if self.cap: self.cap.release()
+        if self.cap:
+            self.cap.release()
+            self.cap = None
 
     def update_frame(self):
         if self.cap and self.cap.isOpened():
-            ret, frame = self.cap.read()
-            if ret:
+            ok, frame = self.cap.read()
+            if ok:
                 self.current_frame = frame
                 rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 h, w, ch = rgb.shape
-                img = QImage(rgb.data, w, h, ch*w, QImage.Format.Format_RGB888)
-                self.video_label.setPixmap(QPixmap.fromImage(img).scaled(self.video_label.size(), Qt.AspectRatioMode.KeepAspectRatio))
-
-    def refresh_users(self):
-        self.user_list.clear()
-        for u in self.client.list_users(): self.user_list.addItem(f"{u.id}: {u.name}")
+                img = QImage(rgb.data, w, h, ch * w, QImage.Format.Format_RGB888).copy()
+                self.video_label.setPixmap(QPixmap.fromImage(img).scaled(
+                    self.video_label.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation
+                ))
 
     def register_user(self):
-        name = self.name_input.text()
-        if name and self.current_frame is not None:
-            _, enc = cv2.imencode('.jpg', self.current_frame)
-            try: self.client.register_user(name, enc.tobytes()); self.refresh_users(); self.name_input.clear()
-            except Exception as e: QMessageBox.critical(self, "Error", str(e))
+        name = self.name_input.text().strip()
+        if not name:
+            QMessageBox.warning(self, "Проверка", "Введите имя пользователя")
+            return
+        if self.current_frame is None:
+            QMessageBox.warning(self, "Проверка", "Сначала запустите камеру и получите кадр")
+            return
+        ok, enc = cv2.imencode('.jpg', self.current_frame)
+        if not ok:
+            QMessageBox.warning(self, "Проверка", "Не удалось закодировать кадр")
+            return
+        self.client.register_user(name, enc.tobytes())
+        QMessageBox.information(self, "OK", "Пользователь зарегистрирован")
+        self.accept()
+
+    def closeEvent(self, event):
+        self.stop_camera()
+        super().closeEvent(event)
+
+
+class PersonnelAccessTab(QWidget):
+    def __init__(self, client):
+        super().__init__()
+        self.client = client
+        self.users_cache = []
+        self.setup_ui()
+        self.refresh_all()
+        self.refresh_timer = QTimer(self)
+        self.refresh_timer.timeout.connect(self.refresh_users_only)
+        self.refresh_timer.start(3000)
+
+    def setup_ui(self):
+        main = QHBoxLayout(self)
+        main.setContentsMargins(12, 12, 12, 12)
+        main.setSpacing(8)
+
+        left = QVBoxLayout()
+        left.setSpacing(6)
+        left.addWidget(QLabel("<b>Пользователи</b>"))
+        self.user_list = QListWidget()
+        self.user_list.currentRowChanged.connect(self.load_user_rights)
+        left.addWidget(self.user_list)
+
+        actions = QHBoxLayout()
+        self.btn_add = QPushButton("➕ Добавить")
+        self.btn_add.clicked.connect(self.open_registration_dialog)
+        self.btn_del = QPushButton("🗑 Удалить")
+        self.btn_del.clicked.connect(self.delete_user)
+        self.btn_refresh = QPushButton("🔄 Обновить")
+        self.btn_refresh.clicked.connect(self.refresh_all)
+        actions.addWidget(self.btn_add)
+        actions.addWidget(self.btn_del)
+        actions.addWidget(self.btn_refresh)
+        left.addLayout(actions)
+
+        right = QVBoxLayout()
+        right.setSpacing(6)
+        right.addWidget(QLabel("<b>Права доступа (до 7±2 комнат на пользователя)</b>"))
+        self.rights_tree = QTreeWidget()
+        self.rights_tree.setHeaderLabels(["Зона/Комната"])
+        right.addWidget(self.rights_tree)
+
+        right.addWidget(QLabel("Настройки интерфейса доступны во вкладке ⚙️ Настройки"))
+
+
+        self.splitter = QSplitter(Qt.Orientation.Horizontal)
+        left_wrap = QWidget(); left_wrap.setLayout(left)
+        right_wrap = QWidget(); right_wrap.setLayout(right)
+        self.splitter.addWidget(left_wrap)
+        self.splitter.addWidget(right_wrap)
+        main.addWidget(self.splitter)
+        self.apply_layout_ratio()
+
+    def apply_layout_ratio(self):
+        total = max(self.width(), 1000)
+        self.splitter.setSizes([int(total * 0.38), int(total * 0.62)])
+
+    def refresh_users_only(self):
+        current_uid = None
+        item = self.user_list.currentItem()
+        if item:
+            current_uid = item.data(Qt.ItemDataRole.UserRole)
+        users = list(self.client.list_users())
+        if [(u.id, u.name) for u in users] == [(u.id, u.name) for u in self.users_cache]:
+            return
+        self.users_cache = users
+        self.user_list.blockSignals(True)
+        self.user_list.clear()
+        sel_row = -1
+        for idx, u in enumerate(users):
+            row = QListWidgetItem(f"#{idx+1} • {u.name} (id={u.id})")
+            row.setData(Qt.ItemDataRole.UserRole, u.id)
+            self.user_list.addItem(row)
+            if current_uid is not None and u.id == current_uid:
+                sel_row = idx
+        self.user_list.blockSignals(False)
+        if sel_row >= 0:
+            self.user_list.setCurrentRow(sel_row)
+        elif self.user_list.count() > 0:
+            self.user_list.setCurrentRow(0)
+
+    def refresh_all(self):
+        self.refresh_users_only()
+        self.load_user_rights(self.user_list.currentRow())
+
+    def open_registration_dialog(self):
+        dlg = RegistrationCameraDialog(self.client, self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self.refresh_all()
 
     def delete_user(self):
         item = self.user_list.currentItem()
-        if item:
-            uid = int(item.text().split(':')[0])
-            self.client.remove_user(uid); self.refresh_users()
+        if not item:
+            return
+        uid = item.data(Qt.ItemDataRole.UserRole)
+        self.client.remove_user(uid)
+        self.refresh_all()
+
+    def load_user_rights(self, _row):
+        item = self.user_list.currentItem()
+        if not item:
+            self.rights_tree.clear()
+            return
+        uid = item.data(Qt.ItemDataRole.UserRole)
+        allowed = set(self.client.get_user_access(uid).allowed_room_ids)
+        zones = self.client.list_zones()
+        rooms = self.client.list_rooms()
+        z_map = {z.id: QTreeWidgetItem([z.name]) for z in zones}
+        for r in rooms:
+            ri = QTreeWidgetItem([r.name])
+            ri.setData(0, Qt.ItemDataRole.UserRole, r.id)
+            ri.setCheckState(0, Qt.CheckState.Checked if r.id in allowed else Qt.CheckState.Unchecked)
+            if r.zone_id in z_map:
+                z_map[r.zone_id].addChild(ri)
+        self.rights_tree.clear()
+        for z in z_map.values():
+            self.rights_tree.addTopLevelItem(z)
+            z.setExpanded(True)
+
+    def save_rights(self):
+        item = self.user_list.currentItem()
+        if not item:
+            return
+        uid = item.data(Qt.ItemDataRole.UserRole)
+        allowed = []
+        it = QTreeWidgetItemIterator(self.rights_tree)
+        while it.value():
+            node = it.value()
+            if node.childCount() == 0 and node.checkState(0) == Qt.CheckState.Checked:
+                allowed.append(node.data(0, Qt.ItemDataRole.UserRole))
+            it += 1
+        # Miller: предупреждаем, если слишком много разрешённых комнат
+        if len(allowed) > 9:
+            QMessageBox.warning(self, "UX-подсказка", "Рекомендуется не более 7±2 комнат на пользователя.")
+        self.client.set_access_rules(uid, allowed)
+        QMessageBox.information(self, "OK", "Права сохранены")
 
 class InfrastructureTab(QWidget):
     def __init__(self, client):
@@ -337,38 +672,31 @@ class InfrastructureTab(QWidget):
     def control_door(self, cmd):
         if hasattr(self, 'current_dev_id'): self.client.control_door(self.current_dev_id, cmd)
 
-class AccessTab(QWidget):
-    def __init__(self, client):
-        super().__init__(); self.client = client; self.setup_ui()
-    def setup_ui(self):
-        layout = QHBoxLayout(self); left = QVBoxLayout(); left.addWidget(QLabel("1. Выберите пользователя"))
-        self.user_list = QListWidget(); self.user_list.currentItemChanged.connect(self.load_user_rights); left.addWidget(self.user_list); layout.addLayout(left, 1)
-        right = QVBoxLayout(); right.addWidget(QLabel("2. Отметьте доступные помещения"))
-        self.rights_tree = QTreeWidget(); self.rights_tree.setHeaderLabels(["Помещение"]); right.addWidget(self.rights_tree)
-        self.btn_save = QPushButton("💾 Сохранить права"); self.btn_save.clicked.connect(self.save_rights); right.addWidget(self.btn_save); layout.addLayout(right, 2)
-        self.refresh()
-    def refresh(self):
-        self.user_list.clear(); 
-        for u in self.client.list_users(): self.user_list.addItem(f"{u.id}: {u.name}")
-    def load_user_rights(self, current, prev):
-        if not current: return
-        self.rights_tree.clear(); uid = int(current.text().split(':')[0]); allowed = set(self.client.get_user_access(uid))
-        zones = self.client.list_zones(); rooms = self.client.list_rooms(); z_map = {z.id: QTreeWidgetItem([z.name]) for z in zones}
-        for r in rooms:
-            item = QTreeWidgetItem([r.name]); item.setCheckState(0, Qt.CheckState.Checked if r.id in allowed else Qt.CheckState.Unchecked)
-            item.setData(0, Qt.ItemDataRole.UserRole, r.id)
-            if r.zone_id in z_map: z_map[r.zone_id].addChild(item)
-        for z in z_map.values(): self.rights_tree.addTopLevelItem(z); z.setExpanded(True)
-    def save_rights(self):
-        item = self.user_list.currentItem()
-        if not item: return
-        uid = int(item.text().split(':')[0]); allowed = []
-        it = QTreeWidgetItemIterator(self.rights_tree)
-        while it.value():
-            if it.value().checkState(0) == Qt.CheckState.Checked and it.value().childCount() == 0:
-                allowed.append(it.value().data(0, Qt.ItemDataRole.UserRole))
-            it += 1
-        self.client.set_access_rules(uid, allowed); QMessageBox.information(self, "OK", "Saved")
+class SettingsTab(QWidget):
+    def __init__(self, app, settings):
+        super().__init__()
+        self.app = app
+        self.settings = settings
+        layout = QFormLayout(self)
+        self.theme = QComboBox()
+        self.theme.addItems(["dark", "light"])
+        self.theme.setCurrentText(settings.get("theme", "dark"))
+        self.font_size = QComboBox()
+        self.font_size.addItems(["11", "12", "13", "14", "15", "16"])
+        self.font_size.setCurrentText(str(settings.get("font_size", 13)))
+        self.btn_apply = QPushButton("Применить и сохранить")
+        self.btn_apply.clicked.connect(self.apply)
+        layout.addRow("Тема", self.theme)
+        layout.addRow("Размер шрифта", self.font_size)
+        layout.addRow(self.btn_apply)
+
+    def apply(self):
+        self.settings["theme"] = self.theme.currentText()
+        self.settings["font_size"] = int(self.font_size.currentText())
+        save_ui_settings(self.settings)
+        apply_ui_theme(self.app, self.settings)
+        QMessageBox.information(self, "Настройки", "Настройки интерфейса сохранены")
+
 
 class LogTab(QWidget):
     def __init__(self, client):
@@ -380,7 +708,15 @@ class LogTab(QWidget):
         try:
             logs = self.client.get_logs(limit=100); self.table.setRowCount(len(logs))
             for i, log in enumerate(logs):
-                self.table.setItem(i, 0, QTableWidgetItem(str(log.id))); self.table.setItem(i, 1, QTableWidgetItem(log.timestamp))
+                ts = log.timestamp or ""
+                try:
+                    dt = QtCore.QDateTime.fromString(ts, Qt.DateFormat.ISODateWithMs)
+                    if not dt.isValid():
+                        dt = QtCore.QDateTime.fromString(ts, Qt.DateFormat.ISODate)
+                    ts_fmt = dt.toLocalTime().toString("dd.MM.yyyy HH:mm:ss") if dt.isValid() else ts
+                except Exception:
+                    ts_fmt = ts
+                self.table.setItem(i, 0, QTableWidgetItem(str(log.id))); self.table.setItem(i, 1, QTableWidgetItem(ts_fmt))
                 self.table.setItem(i, 2, QTableWidgetItem(log.user_name)); self.table.setItem(i, 3, QTableWidgetItem(log.room_name))
                 self.table.setItem(i, 4, QTableWidgetItem("✅" if log.access_granted else "❌"))
                 self.table.setItem(i, 5, QTableWidgetItem(log.details))
@@ -398,157 +734,506 @@ class HelpTab(QWidget):
             b { color: #e1f5fe; }
             .code { font-family: monospace; background-color: #333; padding: 5px; border-radius: 4px; font-size: 14pt; }
         </style>
-        <h1>📘 Справка по системе Biometry Admin</h1>
-        
-        <h3>🔌 Быстрый старт</h3>
-        <p>1. Запустите серверную часть: <span class=\"code\">./start_all.sh</span></p>
-        <p>2. Убедитесь, что статусы на вкладке <b>"Система"</b> зеленые (ONLINE).</p>
+        <h1>📘 Подробная справка Biometry Admin</h1>
 
-        <h3>🧠 Мониторинг и Идентификация</h3>
-        <p>Вкладка <b>"📹 Мониторинг"</b> позволяет видеть работу системы в реальном времени.</p>
-        <p><b>Режимы работы:</b></p>
+        <h3>🔌 Запуск системы (только Docker)</h3>
+        <p>1. Запустите стек: <span class="code">./start_docker.sh</span>.</p>
+        <p>2. Убедитесь во вкладке <b>"Система"</b>, что сервисы Шлюз/БД/Лицо/Голос в состоянии <b>Онлайн</b>.</p>
+        <p>3. Для остановки используйте <span class="code">./stop_docker.sh</span>.</p>
+
+        <h3>⚙️ Что означает блок Runtime</h3>
         <ul>
-            <li><b>Пассивный режим (по умолчанию):</b> Клиент просто показывает видео. Распознавание выполняет отдельный <i>Hardware Controller</i> (если запущен). Результаты подтягиваются из журнала.</li>
-            <li><b>Активный режим (Live ID):</b> Включите галочку <b>"🚀 Live ID"</b>. Клиент будет сам отправлять кадры на сервер. Идеально для тестов без контроллера.</li>
-        </ul>
-        <p><b>Расшифровка данных на экране:</b></p>
-        <ul>
-            <li><b>Liveness:</b> Вероятность того, что лицо живое (не фото). Порог > 50%.</li>
-            <li><b>Distance:</b> Степень отличия лица от эталона. Чем меньше, тем лучше (Порог < 0.6).</li>
-            <li><b>Provider:</b> Где выполняются вычисления (CUDA - видеокарта, CPU - процессор).</li>
+            <li><b>Текущий режим выполнения</b>: CPU или GPU (определяется по фактическим устройствам воркеров).</li>
+            <li><b>Модуль Vision</b>: устройство и число выделенных потоков для распознавания лица/живости.</li>
+            <li><b>Модуль Audio</b>: устройство и число выделенных потоков для голоса/антиспуфинга.</li>
+            <li><b>Потоки ONNX</b>: это worker-потоки вычислительного движка ONNX Runtime (intra-op), а не прямое число занятых потоков всей ОС.</li>
+            <li><b>Источник настроек</b>: файл <span class="code">.server_runtime.env</span>, который формируется сервером при старте.</li>
         </ul>
 
-        <h3>🏗 Настройка</h3>
-        <p>1. Создайте <b>Зону</b> -> <b>Комнату</b> -> <b>Камеру</b>.</p>
-        <p>2. Для веб-камеры используйте Connection: <span class="code">0</span>.</p>
-        <p>3. Назначьте права сотрудникам на вкладке <b>"Доступ"</b>.</p>
+        <h3>📹 Мониторинг (последовательный пайплайн)</h3>
+        <ul>
+            <li><b>Шаг 1 — Присутствие:</b> дешёвая проверка лица/голоса.</li>
+            <li><b>Шаг 2 — Liveness:</b> выполняется только если присутствие подтверждено.</li>
+            <li><b>Шаг 3 — Идентификация:</b> выполняется только после успешной проверки живости.</li>
+            <li>После идентификации включается небольшая пауза и ожидание исчезновения присутствия, чтобы не было спама в журнале.</li>
+        </ul>
+
+        <h3>👤 Права доступа</h3>
+        <p>Во вкладке <b>"Доступ"</b> выберите пользователя, отметьте разрешённые помещения и нажмите <b>"Сохранить права"</b>.</p>
+        <p>Если сервер использует старую схему proto без зон, клиент сохранит только права по помещениям автоматически.</p>
+
+        <h3>🏗 Инфраструктура</h3>
+        <p>Рекомендуемый порядок настройки: <b>Зона → Комната → Камера</b>, затем выдача прав пользователям.</p>
         """)
         layout.addWidget(text)
 
 class MonitoringTab(QWidget):
     def __init__(self, client):
-        super().__init__(); self.client = client; self.active_cameras = {}; self.log_timer = QTimer()
-        self.log_timer.timeout.connect(self.process_active_mode); self.setup_ui()
-    
+        super().__init__()
+        self.client = client
+        self.active_cameras = {}
+        self.selected_device_id = None
+        self.log_timer = QTimer()
+        self.log_timer.timeout.connect(self.process_active_mode)
+        self.mic_stream = MicrophoneStream(sample_rate=16000, channels=1)
+        self.face_detector = cv2.CascadeClassifier(
+            cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+        )
+        self.last_presence_ts = 0.0
+        self.last_pipeline_ts = 0.0
+        self.last_presence_state = False
+        self.pipeline_inflight = False
+        self.pipeline_stage = "presence"
+        self.ident_cooldown_until = 0.0
+        self.await_presence_clear = False
+        self.door_sessions = {}
+        self.setup_ui()
+
     def setup_ui(self):
-        layout = QHBoxLayout(self); left = QVBoxLayout()
-        self.tree = QTreeWidget(); self.tree.setHeaderHidden(True); self.tree.currentItemChanged.connect(self.on_room_select)
-        left.addWidget(QLabel("<b>Помещения:</b>")); left.addWidget(self.tree)
-        self.chk_active = QCheckBox("🚀 Live ID (Активный режим)"); self.chk_active.setToolTip("Клиент сам отправляет кадры на сервер")
-        left.addWidget(self.chk_active)
-        btn = QPushButton("🔄 Обновить"); btn.clicked.connect(self.refresh_tree); left.addWidget(btn)
+        layout = QHBoxLayout(self)
+
+        left = QVBoxLayout()
+        self.tree = QTreeWidget()
+        self.tree.setHeaderHidden(True)
+        self.tree.currentItemChanged.connect(self.on_select)
+        left.addWidget(QLabel("<b>Помещения и устройства:</b>"))
+        left.addWidget(self.tree)
+
+        self.btn_refresh = QPushButton("🔄 Обновить список инфраструктуры")
+        self.btn_refresh.clicked.connect(self.refresh_tree)
+        left.addWidget(self.btn_refresh)
+
+        self.btn_reconnect = QPushButton("🔌 Переподключить выбранную камеру")
+        self.btn_reconnect.clicked.connect(self.reconnect_selected_camera)
+        left.addWidget(self.btn_reconnect)
+        left.addStretch()
         layout.addLayout(left, 1)
-        self.video_container = QWidget(); self.grid_layout = QGridLayout(self.video_container)
-        scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setWidget(self.video_container); layout.addWidget(scroll, 3)
-        self.refresh_tree(); self.log_timer.start(1000)
+
+        center = QVBoxLayout()
+        self.video_label = QLabel("Выбери устройство-камеру слева")
+        self.video_label.setMinimumSize(800, 600)  # 4:3 area
+        self.video_label.setStyleSheet("background-color: black; border: 1px solid #555;")
+        self.video_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        center.addWidget(self.video_label)
+
+        layout.addLayout(center, 3)
+
+        self.pipeline_log = QTextEdit()
+        self.pipeline_log.setReadOnly(True)
+        self.pipeline_log.setMinimumWidth(420)
+        self.pipeline_log.setPlaceholderText("Краткий лог: присутствие, этап, итог решения")
+        layout.addWidget(self.pipeline_log, 2)
+
+        self.refresh_tree()
+        self.log_timer.start(250)  # быстрый цикл детекции присутствия
+
+    def capture_audio_raw(self, duration_s=1, sample_rate=16000):
+        chunk = self.mic_stream.read_chunk(duration_s=duration_s)
+        if chunk is None:
+            self.append_pipeline_log("[AUDIO] capture failed: microphone stream unavailable")
+            return None
+        return chunk
+
+    def append_pipeline_log(self, text: str):
+        self.pipeline_log.append(text)
+        doc = self.pipeline_log.document()
+        while doc.blockCount() > 80:
+            cursor = self.pipeline_log.textCursor()
+            cursor.movePosition(cursor.MoveOperation.Start)
+            cursor.select(cursor.SelectionType.LineUnderCursor)
+            cursor.removeSelectedText()
+            cursor.deleteChar()
+
+    def detect_person_in_frame(self, frame):
+        if frame is None:
+            return False
+        img = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        faces = self.face_detector.detectMultiScale(img, scaleFactor=1.1, minNeighbors=4, minSize=(48, 48))
+        return len(faces) > 0
+
+    def detect_voice_presence(self):
+        raw = self.capture_audio_raw(duration_s=0.2, sample_rate=16000)
+        if not raw:
+            return False, None
+        pcm = np.frombuffer(raw, dtype=np.int16).astype(np.float32)
+        if pcm.size == 0:
+            return False, None
+        rms = float(np.sqrt(np.mean((pcm / 32768.0) ** 2)))
+        return rms > 0.008, raw
 
     def refresh_tree(self):
         self.tree.clear()
         try:
-            zones = self.client.list_zones(); rooms = self.client.list_rooms(); z_map = {z.id: QTreeWidgetItem([z.name]) for z in zones}
+            zones = self.client.list_zones()
+            rooms = self.client.list_rooms()
+            devices = self.client.list_devices()
+            z_map = {z.id: QTreeWidgetItem([f"{z.name}"]) for z in zones}
+            r_map = {}
             for r in rooms:
-                item = QTreeWidgetItem([r.name]); item.setData(0, Qt.ItemDataRole.UserRole, r.id)
-                if r.zone_id in z_map: z_map[r.zone_id].addChild(item)
-            for z in z_map.values(): self.tree.addTopLevelItem(z); z.setExpanded(True)
-        except: pass
+                room_item = QTreeWidgetItem([f"{r.name}"])
+                room_item.setData(0, Qt.ItemDataRole.UserRole, ("room", r.id))
+                r_map[r.id] = room_item
+                if r.zone_id in z_map:
+                    z_map[r.zone_id].addChild(room_item)
 
-    def on_room_select(self, current, prev=None):
+            for d in devices:
+                if d.room_id in r_map and d.device_type == 'camera':
+                    d_item = QTreeWidgetItem([f"📷 {d.name} ({d.connection_string})"])
+                    d_item.setData(0, Qt.ItemDataRole.UserRole, ("device", d))
+                    r_map[d.room_id].addChild(d_item)
+
+            for z in z_map.values():
+                self.tree.addTopLevelItem(z)
+                z.setExpanded(True)
+        except Exception as e:
+            self.append_pipeline_log(f"[UI] refresh error: {e}")
+
+    def on_select(self, current, _prev=None):
         self.stop_all_videos()
-        while self.grid_layout.count():
-            item = self.grid_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-        
-        if not current or current.childCount() > 0: return
-        room_id = current.data(0, Qt.ItemDataRole.UserRole)
-        try:
-            devices = [d for d in self.client.list_devices() if d.room_id == room_id and d.device_type == 'camera']
-            if not devices: self.grid_layout.addWidget(QLabel("Нет камер"), 0, 0); return
-            for i, dev in enumerate(devices):
-                lbl = QLabel(f"Loading {dev.name}..."); lbl.setMinimumSize(320, 240); lbl.setStyleSheet("background-color: black; border: 1px solid #555;"); self.grid_layout.addWidget(lbl, i//2, i%2)
-                t = VideoThread(dev.connection_string, dev.id)
-                t.frame_ready.connect(lambda img, l=lbl: l.setPixmap(QPixmap.fromImage(img).scaled(l.size(), Qt.AspectRatioMode.KeepAspectRatio)))
-                t.start(); self.active_cameras[dev.id] = t
-        except: pass
+        if not current:
+            return
+        data = current.data(0, Qt.ItemDataRole.UserRole)
+        if not data or data[0] != "device":
+            self.selected_device_id = None
+            self.video_label.setText("Выбери устройство-камеру слева")
+            return
+
+        dev = data[1]
+        self.selected_device_id = dev.id
+        t = VideoThread(dev.connection_string, dev.id)
+        t.frame_ready.connect(self._show_frame)
+        t.status_msg.connect(lambda msg: self.append_pipeline_log(f"[CAMERA] {msg}"))
+        t.start()
+        self.active_cameras[dev.id] = t
+
+    def _show_frame(self, img):
+        pix = QPixmap.fromImage(img)
+        self.video_label.setPixmap(
+            pix.scaled(self.video_label.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+        )
+
+    def reconnect_selected_camera(self):
+        item = self.tree.currentItem()
+        if item:
+            self.on_select(item)
 
     def stop_all_videos(self):
-        for t in self.active_cameras.values(): t.stop(); t.wait()
+        for t in self.active_cameras.values():
+            t.stop()
+            t.wait()
         self.active_cameras.clear()
+        self.door_sessions.clear()
 
     def restart_videos(self):
         item = self.tree.currentItem()
-        if item: self.on_room_select(item)
+        if item:
+            self.on_select(item)
 
     def process_active_mode(self):
-        if self.chk_active.isChecked():
-            # Active Mode: Send frames
-            for dev_id, t in self.active_cameras.items():
-                frame = t.get_frame_bytes()
-                if frame:
-                    try:
-                        resp = self.client.stub.CheckAccess(biometry_pb2.CheckAccessRequest(device_id=dev_id, image=frame))
-                        msg = f"{resp.user_name}: {'OK' if resp.granted else 'NO'}\n{resp.message}" # Server usually sends generic message, log has details
-                        # To show details we rely on log or update server response. 
-                        # Server now logs details to DB. Let's try to fetch latest log for details too?
-                        # Or just show the main decision.
-                        # Actually, we can fetch logs in parallel or just show result.
-                        # Let's show result color.
-                        color = (0, 255, 0) if resp.granted else (0, 0, 255)
-                        t.set_overlay(msg, color)
-                    except: pass
-        else:
-            # Passive Mode: Check logs
+        # Последовательный пайплайн:
+        # 1) Face-first presence -> 2) clip identification (liveness/match на сервере)
+        if not self.active_cameras:
+            return
+
+        now = time.time()
+        voice_present, audio_probe = self.detect_voice_presence()
+
+        for dev_id, t in self.active_cameras.items():
+            if now < self.ident_cooldown_until:
+                continue
+            frame_np = t.get_frame_copy()
+            if frame_np is None:
+                continue
+
+            person_present = self.detect_person_in_frame(frame_np)
+            present = person_present
+
+            if self.pipeline_stage == "presence":
+                if present:
+                    self.last_presence_ts = now
+                    if not self.last_presence_state:
+                        self.append_pipeline_log("[PRESENCE] Обнаружено лицо у входа.")
+                    self.last_presence_state = True
+                    if self.await_presence_clear:
+                        continue
+                    self.pipeline_stage = "identification"
+                else:
+                    if self.last_presence_state and (now - self.last_presence_ts) > 1.5:
+                        self.append_pipeline_log("[PRESENCE] Нет человека у входа.")
+                    self.last_presence_state = False
+                    self.await_presence_clear = False
+                    self.door_sessions.pop(dev_id, None)
+                    continue
+
+            if self.pipeline_inflight:
+                continue
+
+            ok, enc = cv2.imencode('.jpg', frame_np)
+            if not ok:
+                self.pipeline_stage = "presence"
+                continue
+            frame = enc.tobytes()
+
+            if self.pipeline_stage == "identification":
+                self.pipeline_inflight = True
+                audio_bytes = audio_probe if voice_present else self.capture_audio_raw(duration_s=0.25, sample_rate=16000)
+                try:
+                    session_id = self.door_sessions.get(dev_id)
+                    if not session_id:
+                        session_id = f"ui-{dev_id}-{uuid.uuid4().hex[:8]}"
+                        self.door_sessions[dev_id] = session_id
+
+                    door_resp = self.client.submit_door_observation(
+                        session_id=session_id,
+                        device_id=dev_id,
+                        frame=frame,
+                        audio=audio_bytes or b"",
+                        sample_rate=16000,
+                        timestamp_ms=int(time.time() * 1000),
+                    )
+
+                    if door_resp is not None:
+                        if getattr(door_resp, "pending", False):
+                            self.pipeline_inflight = False
+                            self.append_pipeline_log(
+                                f"[DOOR] stage={getattr(door_resp, 'stage', 0)} pending: {getattr(door_resp, 'reason', '')}"
+                            )
+                            continue
+
+                        self.door_sessions.pop(dev_id, None)
+                        class AccessCompat:
+                            pass
+                        access = AccessCompat()
+                        access.user_name = getattr(door_resp, "user_name", "Unknown")
+                        access.granted = getattr(door_resp, "access_granted", False)
+                        access.message = getattr(door_resp, "reason", "")
+                        access.final_confidence = float(getattr(door_resp, "confidence", 0.0))
+                        self.append_pipeline_log(
+                            f"[DOOR] stage={getattr(door_resp, 'stage', 0)} conf={access.final_confidence:.2f} "
+                            f"flags={list(getattr(door_resp, 'flags', []))} reason={access.message}"
+                        )
+                    else:
+                        clip_frames = [frame]
+                        clip_ts = [int(time.time() * 1000)]
+                        for _ in range(2):
+                            extra = t.get_frame_copy()
+                            if extra is None:
+                                continue
+                            ok_extra, enc_extra = cv2.imencode('.jpg', extra)
+                            if not ok_extra:
+                                continue
+                            clip_frames.append(enc_extra.tobytes())
+                            clip_ts.append(int(time.time() * 1000))
+
+                        access_v2 = self.client.check_access_v2(
+                            session_id=session_id,
+                            device_id=dev_id,
+                            frames=clip_frames,
+                            audio_bytes=audio_bytes,
+                            sample_rate=16000,
+                            frame_timestamps_ms=clip_ts,
+                        )
+                        if access_v2 is None:
+                            access = self.client.check_access(
+                                device_id=dev_id,
+                                image_bytes=frame,
+                                audio_bytes=audio_bytes,
+                                sample_rate=16000,
+                            )
+                        else:
+                            class AccessCompat:
+                                pass
+                            access = AccessCompat()
+                            access.user_name = getattr(access_v2, "user_name", "Unknown")
+                            access.granted = getattr(access_v2, "granted", False)
+                            access.message = getattr(access_v2, "reason", "")
+                            access.final_confidence = float(getattr(access_v2, "confidence", 0.0))
+
+                except Exception as e:
+                    self.pipeline_inflight = False
+                    self.pipeline_stage = "presence"
+                    self.door_sessions.pop(dev_id, None)
+                    self.append_pipeline_log(f"[IDENT] ошибка RPC: {e}")
+                    continue
+
+                self.pipeline_inflight = False
+                self.pipeline_stage = "presence"
+                self.await_presence_clear = True
+                self.ident_cooldown_until = time.time() + 2.0
+
+                msg = f"{access.user_name}: {'OK' if access.granted else 'NO'}\n{access.message}"
+                color = (0, 255, 0) if access.granted else (0, 0, 255)
+                t.set_overlay(msg, color)
+
+                details = getattr(access, "message", "")
+                conf = float(getattr(access, 'final_confidence', 0.0))
+                self.append_pipeline_log(
+                    f"[{dev_id}] {'ДОСТУП' if access.granted else 'ОТКАЗ'} | этап: идентификация | "
+                    f"уверенность: {conf:.2f} | пользователь: {access.user_name} | причина: {details}"
+                )
+
+    def closeEvent(self, event):
+        self.stop_all_videos()
+        self.mic_stream.stop()
+        super().closeEvent(event)
+
+
+class MicrophoneStream:
+    def __init__(self, sample_rate=16000, channels=1):
+        self.sample_rate = sample_rate
+        self.channels = channels
+        self.proc = None
+
+    def start(self):
+        if self.proc is not None and self.proc.poll() is None:
+            return True
+        cmd = [
+            "arecord", "-q", "-r", str(self.sample_rate), "-c", str(self.channels),
+            "-f", "S16_LE", "-t", "raw", "-",
+        ]
+        try:
+            self.proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+            return True
+        except Exception:
+            self.proc = None
+            return False
+
+    def read_chunk(self, duration_s=1):
+        if not self.start() or not self.proc or not self.proc.stdout:
+            return None
+        needed = int(self.sample_rate * duration_s * 2 * self.channels)  # int16 mono
+        data = self.proc.stdout.read(needed)
+        if not data or len(data) < needed:
+            return None
+        return data
+
+    def stop(self):
+        if self.proc and self.proc.poll() is None:
+            self.proc.terminate()
             try:
-                logs = self.client.get_logs(limit=1)
-                if logs and self.active_cameras:
-                    log = logs[0]
-                    # Simple heuristic: show log if it's recent (TODO: check timestamp)
-                    msg = f"{log.user_name}: {'OK' if log.access_granted else 'NO'}\n{log.details}"
-                    color = (0, 255, 0) if log.access_granted else (0, 0, 255)
-                    for t in self.active_cameras.values(): t.set_overlay(msg, color)
-            except: pass
+                self.proc.wait(timeout=1)
+            except Exception:
+                self.proc.kill()
+        self.proc = None
+
 
 class VideoThread(QThread):
     frame_ready = pyqtSignal(QImage)
+    status_msg = pyqtSignal(str)
+
     def __init__(self, source, dev_id):
-        super().__init__(); self.source = int(source) if str(source).isdigit() else source; self.dev_id = dev_id; self.running = True; self.overlay = ("", (0, 255, 0), 0)
-        self.mutex = QMutex(); self.current_frame = None
+        super().__init__()
+        self.source = int(source) if str(source).isdigit() else source
+        self.dev_id = dev_id
+        self.running = True
+        self.overlay = ("", (0, 255, 0), 0)
+        self.mutex = QMutex()
+        self.current_frame = None
+
     def run(self):
         cap = cv2.VideoCapture(self.source)
+        if not cap.isOpened():
+            self.status_msg.emit(f"Не удалось открыть камеру: source={self.source}")
+            return
+
         while self.running:
             ret, frame = cap.read()
             if ret:
-                self.mutex.lock(); self.current_frame = frame.copy(); self.mutex.unlock()
+                self.mutex.lock()
+                self.current_frame = frame.copy()
+                self.mutex.unlock()
                 if self.overlay[2] > 0:
                     y0, dy = 50, 30
-                    for i, line in enumerate(self.overlay[0].split('\n')): cv2.putText(frame, line, (10, y0 + i*dy), cv2.FONT_HERSHEY_SIMPLEX, 0.7, self.overlay[1], 2)
+                    for i, line in enumerate(self.overlay[0].split('\n')):
+                        cv2.putText(frame, line, (10, y0 + i * dy), cv2.FONT_HERSHEY_SIMPLEX, 0.7, self.overlay[1], 2)
                     self.overlay = (self.overlay[0], self.overlay[1], self.overlay[2] - 1)
-                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB); h, w, ch = rgb.shape; img = QImage(rgb.data, w, h, ch*w, QImage.Format.Format_RGB888); self.frame_ready.emit(img)
-            else: self.msleep(100)
+
+                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                h, w, ch = rgb.shape
+                img = QImage(rgb.data, w, h, ch * w, QImage.Format.Format_RGB888).copy()
+                self.frame_ready.emit(img)
+            else:
+                self.status_msg.emit("Поток камеры недоступен")
+                self.msleep(200)
             self.msleep(30)
         cap.release()
-    def stop(self): self.running = False
-    def set_overlay(self, text, color): self.overlay = (text, color, 60)
+
+    def stop(self):
+        self.running = False
+
+    def set_overlay(self, text, color):
+        self.overlay = (text, color, 60)
+
     def get_frame_bytes(self):
-        self.mutex.lock(); f = self.current_frame; self.mutex.unlock()
-        if f is not None: _, enc = cv2.imencode('.jpg', f); return enc.tobytes()
+        self.mutex.lock()
+        f = self.current_frame
+        self.mutex.unlock()
+        if f is not None:
+            _, enc = cv2.imencode('.jpg', f)
+            return enc.tobytes()
         return None
 
+    def get_frame_copy(self):
+        self.mutex.lock()
+        f = self.current_frame.copy() if self.current_frame is not None else None
+        self.mutex.unlock()
+        return f
+
+
 class AdminApp(QMainWindow):
-    def __init__(self):
-        super().__init__(); self.setWindowTitle("Biometry Admin Panel 2.0"); self.resize(1200, 800); self.client = BiometryClient()
-        self.tabs = QTabWidget(); self.personnel_tab = PersonnelTab(self.client); self.monitor_tab = MonitoringTab(self.client)
-        self.tabs.addTab(SystemTab(self.client), "⚙️ Система"); self.tabs.addTab(self.personnel_tab, "👥 Персонал")
-        self.tabs.addTab(InfrastructureTab(self.client), "🏗 Инфраструктура"); self.tabs.addTab(AccessTab(self.client), "🔐 Доступ")
-        self.tabs.addTab(self.monitor_tab, "📹 Мониторинг"); self.tabs.addTab(LogTab(self.client), "📜 Журнал"); self.tabs.addTab(HelpTab(), "❓ Справка")
+    def __init__(self, app, client, ui_settings):
+        super().__init__(); self.setWindowTitle("Biometry Admin Panel 2.0"); self.resize(1280, 840); self.client = client; self.app = app; self.ui_settings = ui_settings
+        self.tabs = QTabWidget(); self.personnel_tab = PersonnelAccessTab(self.client); self.monitor_tab = MonitoringTab(self.client)
+        self.tabs.addTab(self.monitor_tab, "📹 Мониторинг")
+        self.tabs.addTab(SystemTab(self.client), "⚙️ Система")
+        self.tabs.addTab(SettingsTab(self.app, self.ui_settings), "🎛 Настройки")
+        self.tabs.addTab(self.personnel_tab, "👥 Персонал и доступ")
+        self.tabs.addTab(InfrastructureTab(self.client), "🏗 Инфраструктура")
+        self.tabs.addTab(LogTab(self.client), "📜 Журнал")
+        self.tabs.addTab(HelpTab(), "❓ Справка")
         self.tabs.currentChanged.connect(self.on_tab_change); self.setCentralWidget(self.tabs)
     def on_tab_change(self, index):
-        if self.tabs.widget(index) == self.personnel_tab: self.personnel_tab.start_camera()
-        else: self.personnel_tab.stop_camera()
         if self.tabs.widget(index) == self.monitor_tab: self.monitor_tab.restart_videos()
         else: self.monitor_tab.stop_all_videos()
     def closeEvent(self, event):
-        self.personnel_tab.stop_camera(); self.monitor_tab.stop_all_videos(); event.accept()
+        self.monitor_tab.stop_all_videos(); event.accept()
 
 if __name__ == "__main__":
-    app = QApplication(sys.argv); set_dark_theme(app); w = AdminApp(); w.show(); sys.exit(app.exec())
+    app = QApplication(sys.argv)
+    ui_settings = load_ui_settings()
+    apply_ui_theme(app, ui_settings)
+
+    gateway_addr = os.getenv("GATEWAY_ADDR", "127.0.0.1:50051")
+    if len(sys.argv) > 1 and sys.argv[1].strip():
+        gateway_addr = sys.argv[1].strip()
+
+    client = BiometryClient(gateway_addr)
+    if not client.wait_until_ready(total_timeout=45.0, probe_timeout=2.0):
+        extra_hint = ""
+        try:
+            # Если docker compose доступен, показываем его вывод прямо в ошибке.
+            ps = subprocess.check_output(["docker", "compose", "ps"], text=True, stderr=subprocess.STDOUT)
+            extra_hint = (
+                "\n\n"
+                "Статус docker compose:\n"
+                f"{ps}\n"
+                "Проверь логи gateway:\n"
+                "  docker compose logs --tail=120 gateway-service\n"
+            )
+        except Exception:
+            pass
+
+        QMessageBox.critical(
+            None,
+            "Gateway недоступен",
+            f"Не удалось подключиться к gRPC Gateway по адресу {gateway_addr}.\n"
+            "Проверьте, что gateway-service запущен и порт 50051 проброшен.\n"
+            "Docker: ./start_docker.sh\n"
+            "По умолчанию клиент использует 127.0.0.1:50051 (или GATEWAY_ADDR)."
+            + extra_hint,
+        )
+        sys.exit(1)
+
+    w = AdminApp(app, client, ui_settings)
+    w.show()
+    sys.exit(app.exec())
