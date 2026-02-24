@@ -15,6 +15,7 @@ def check_hardware(address):
         for d in response.found_devices:
             print(f" - ID: {d.id}, Name: {d.name}, Type: {d.device_type}, Conn: {d.connection_string}")
         
+        # Check Hardware (List) via gateway ScanHardware RPC
         print("\nCalling ListDevices...")
         response_list = stub.ListDevices(biometry_pb2.ListDevicesRequest())
         print(f"Found {len(response_list.devices)} devices.")

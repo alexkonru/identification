@@ -12,7 +12,8 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QTabWidget, QListWidget, QLabel, QLineEdit, QPushButton,
     QGroupBox, QComboBox, QMessageBox, QInputDialog, QDialog, QFormLayout,
-    QTreeWidget, QTreeWidgetItem, QTreeWidgetItemIterator, QTableWidget, QTableWidgetItem, QTextEdit, QGridLayout
+    QTreeWidget, QTreeWidgetItem, QTreeWidgetItemIterator, QHeaderView, QSplitter, QCheckBox, QTableWidget, QTableWidgetItem,
+    QScrollArea, QTextEdit, QGridLayout
 )
 from PyQt6.QtGui import QImage, QPixmap, QPalette, QColor, QFont
 from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal, QMutex
@@ -63,8 +64,16 @@ class BiometryClient:
         self.audio_channel = grpc.insecure_channel(f"{host}:50053")
         self.vision_stub = biometry_pb2_grpc.VisionStub(self.vision_channel)
         self.audio_stub = biometry_pb2_grpc.AudioStub(self.audio_channel)
+        self.door_channel = grpc.insecure_channel(f"{host}:50054")
+        self.door_stub = getattr(biometry_pb2_grpc, "DoorAgentStub", None)
+        self.door_stub = self.door_stub(self.door_channel) if self.door_stub else None
 
     def wait_until_ready(self, total_timeout=45.0, probe_timeout=2.0):
+        # Для Docker-старта gateway может подняться не мгновенно:
+        # контейнер уже существует, но gRPC сервис ещё инициализируется.
+        # Важно: GetSystemStatus внутри gateway опрашивает audio/vision workers,
+        # поэтому при их старте/недоступности этот RPC может таймаутить,
+        # даже если сам gateway уже доступен.
         deadline = time.time() + total_timeout
         while time.time() < deadline:
             try:
@@ -159,6 +168,21 @@ class BiometryClient:
 
     def get_logs(self, limit=50, offset=0):
         return self.stub.GetLogs(biometry_pb2.GetLogsRequest(limit=limit, offset=offset)).logs
+
+    def submit_door_observation(self, session_id, device_id, frame, audio=b"", sample_rate=16000, timestamp_ms=0):
+        if self.door_stub is None:
+            return None
+        req_cls = getattr(biometry_pb2, "DoorObservationRequest", None)
+        if req_cls is None:
+            return None
+        return self.door_stub.SubmitObservation(req_cls(
+            session_id=session_id,
+            device_id=device_id,
+            frame=frame,
+            timestamp_ms=timestamp_ms,
+            audio=audio or b"",
+            audio_sample_rate=sample_rate,
+        ))
 
     def check_access(self, device_id, image_bytes, audio_bytes=None, sample_rate=16000):
         field_map = self._message_field_map(biometry_pb2.CheckAccessRequest)
@@ -732,7 +756,7 @@ class MonitoringTab(QWidget):
 
     def process_active_mode(self):
         # Последовательный пайплайн:
-        # 1) Дешёвое присутствие -> 2) только liveness -> 3) только идентификация
+        # 1) Face-first presence -> 2) clip identification (liveness/match на сервере)
         if not self.active_cameras:
             return
 
@@ -747,17 +771,17 @@ class MonitoringTab(QWidget):
                 continue
 
             person_present = self.detect_person_in_frame(frame_np)
-            present = person_present or voice_present
+            present = person_present
 
             if self.pipeline_stage == "presence":
                 if present:
                     self.last_presence_ts = now
                     if not self.last_presence_state:
-                        self.append_pipeline_log("[PRESENCE] Обнаружено присутствие (лицо/голос).")
+                        self.append_pipeline_log("[PRESENCE] Обнаружено лицо у входа.")
                     self.last_presence_state = True
                     if self.await_presence_clear:
                         continue
-                    self.pipeline_stage = "liveness"
+                    self.pipeline_stage = "identification"
                 else:
                     if self.last_presence_state and (now - self.last_presence_ts) > 1.5:
                         self.append_pipeline_log("[PRESENCE] Нет человека у входа.")
@@ -773,28 +797,6 @@ class MonitoringTab(QWidget):
                 self.pipeline_stage = "presence"
                 continue
             frame = enc.tobytes()
-
-            if self.pipeline_stage == "liveness":
-                self.pipeline_inflight = True
-                try:
-                    face = self.client.vision_stub.ProcessFace(biometry_pb2.ImageFrame(content=frame))
-                except Exception as e:
-                    self.pipeline_inflight = False
-                    self.pipeline_stage = "presence"
-                    self.append_pipeline_log(f"[LIVENESS] ошибка RPC: {e}")
-                    continue
-
-                self.pipeline_inflight = False
-                live_ok = bool(face.detected and face.is_live)
-                self.append_pipeline_log(
-                    f"[LIVENESS] detected={face.detected}, live={face.is_live}, score={face.liveness_score:.3f}"
-                )
-
-                if live_ok:
-                    self.pipeline_stage = "identification"
-                else:
-                    self.pipeline_stage = "presence"
-                continue
 
             if self.pipeline_stage == "identification":
                 self.pipeline_inflight = True
@@ -813,6 +815,22 @@ class MonitoringTab(QWidget):
                         clip_ts.append(int(time.time() * 1000))
 
                     session_id = f"ui-{dev_id}-{uuid.uuid4().hex[:8]}"
+                    door_resp = self.client.submit_door_observation(
+                        session_id=session_id,
+                        device_id=dev_id,
+                        frame=frame,
+                        audio=audio_bytes or b"",
+                        sample_rate=16000,
+                        timestamp_ms=clip_ts[0],
+                    )
+                    if door_resp is not None and getattr(door_resp, "pending", False):
+                        self.pipeline_inflight = False
+                        self.pipeline_stage = "presence"
+                        self.append_pipeline_log(
+                            f"[DOOR] stage={getattr(door_resp, 'stage', 0)} pending: {getattr(door_resp, 'reason', '')}"
+                        )
+                        continue
+
                     access_v2 = self.client.check_access_v2(
                         session_id=session_id,
                         device_id=dev_id,
@@ -822,16 +840,34 @@ class MonitoringTab(QWidget):
                         frame_timestamps_ms=clip_ts,
                     )
 
-                    if access_v2 is not None:
+                    if door_resp is not None and not getattr(door_resp, "pending", False):
+                        class AccessCompat:
+                            pass
+                        access = AccessCompat()
+                        access.user_name = getattr(door_resp, "user_name", "Unknown")
+                        access.granted = getattr(door_resp, "access_granted", False)
+                        access.message = getattr(door_resp, "reason", "")
+                        access.final_confidence = float(getattr(door_resp, "confidence", 0.0))
+                        self.append_pipeline_log(
+                            f"[DOOR] stage={getattr(door_resp, 'stage', 0)} conf={access.final_confidence:.2f} "
+                            f"flags={list(getattr(door_resp, 'flags', []))} reason={access.message}"
+                        )
+                    elif access_v2 is not None:
                         class AccessCompat:
                             pass
                         access = AccessCompat()
                         access.user_name = getattr(access_v2, "user_name", "Unknown")
                         access.granted = getattr(access_v2, "granted", False)
                         access.message = getattr(access_v2, "reason", "")
-                        access.final_confidence = getattr(access_v2, "confidence", 0.0)
+                        access.final_confidence = float(getattr(access_v2, "confidence", 0.0))
+                        face_dist = float(getattr(access_v2, "face_distance", 1.0))
+                        face_live = bool(getattr(access_v2, "face_live", False))
+                        voice_dist = float(getattr(access_v2, "voice_distance", 1.0))
+                        stage = int(getattr(access_v2, "stage", 0))
+                        flags = list(getattr(access_v2, "flags", []))
                         self.append_pipeline_log(
-                            f"[IDENT] V2 stage={getattr(access_v2, 'stage', 0)} flags={list(getattr(access_v2, 'flags', []))}"
+                            f"[IDENT] V2 stage={stage} conf={access.final_confidence:.2f} face_dist={face_dist:.3f} "
+                            f"face_live={face_live} voice_dist={voice_dist:.3f} flags={flags} reason={access.message}"
                         )
                     else:
                         access = self.client.check_access(
@@ -856,10 +892,10 @@ class MonitoringTab(QWidget):
                 t.set_overlay(msg, color)
 
                 details = getattr(access, "message", "")
+                conf = float(getattr(access, 'final_confidence', 0.0))
                 self.append_pipeline_log(
                     f"[{dev_id}] {'ДОСТУП' if access.granted else 'ОТКАЗ'} | этап: идентификация | "
-                    f"уверенность: {getattr(access, 'final_confidence', 0.0):.2f} | пользователь: {access.user_name} | "
-                    f"причина: {details}"
+                    f"уверенность: {conf:.2f} | пользователь: {access.user_name} | причина: {details}"
                 )
 
     def closeEvent(self, event):

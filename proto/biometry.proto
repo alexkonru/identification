@@ -40,6 +40,12 @@ service Gatekeeper {
   rpc Shutdown(Empty) returns (Empty);
 }
 
+
+service DoorAgent {
+  rpc SubmitObservation (DoorObservationRequest) returns (DoorObservationResponse);
+  rpc GetDoorAgentStatus (Empty) returns (DoorAgentStatusResponse);
+}
+
 service Vision {
   rpc ProcessFace (ImageFrame) returns (BioResult);
   rpc GetStatus (Empty) returns (ServiceStatus);
@@ -243,6 +249,40 @@ message BioResult {
   repeated float embedding = 4;
   string error_msg = 5;
   string execution_provider = 6;
+}
+
+
+
+enum DoorPipelineStage {
+  DOOR_STAGE_IDLE = 0;
+  DOOR_STAGE_PRESENCE = 1;
+  DOOR_STAGE_COLLECTING_CLIP = 2;
+  DOOR_STAGE_IDENTIFICATION = 3;
+  DOOR_STAGE_COOLDOWN = 4;
+}
+
+message DoorObservationRequest {
+  string session_id = 1;
+  int32 device_id = 2;
+  bytes frame = 3;
+  int64 timestamp_ms = 4;
+  bytes audio = 5;
+  uint32 audio_sample_rate = 6;
+}
+
+message DoorObservationResponse {
+  bool access_granted = 1;
+  DoorPipelineStage stage = 2;
+  string reason = 3;
+  float confidence = 4;
+  string user_name = 5;
+  bool pending = 6;
+  repeated string flags = 7;
+}
+
+message DoorAgentStatusResponse {
+  int32 active_sessions = 1;
+  int32 cooldown_sessions = 2;
 }
 
 // System Management

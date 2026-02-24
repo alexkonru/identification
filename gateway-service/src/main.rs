@@ -37,6 +37,14 @@ struct ClipFrameAssessment {
     liveness_score: f32,
 }
 
+struct ClipSelectionSummary {
+    best_idx: usize,
+    flags: Vec<String>,
+    median_liveness: f32,
+    live_ratio: f32,
+    detected_ratio: f32,
+}
+
 struct HardwareProfile {
     cpu_cores: usize,
     cpu_threads: usize,
@@ -182,13 +190,88 @@ impl GatewayService {
         }
     }
 
-    async fn pick_best_clip_frame(&self, frames: &[Vec<u8>]) -> (usize, Vec<String>) {
+    fn estimate_speech_seconds(audio: &[u8], sample_rate: u32) -> f32 {
+        if audio.len() < 2 || sample_rate == 0 {
+            return 0.0;
+        }
+        let samples: Vec<i16> = audio
+            .chunks_exact(2)
+            .map(|c| i16::from_le_bytes([c[0], c[1]]))
+            .collect();
+        if samples.is_empty() {
+            return 0.0;
+        }
+
+        let frame_len = ((sample_rate as usize) / 100).max(1); // 10ms
+        let mut active_frames = 0usize;
+        let mut total_frames = 0usize;
+        for frame in samples.chunks(frame_len) {
+            if frame.is_empty() {
+                continue;
+            }
+            total_frames += 1;
+            let energy = frame
+                .iter()
+                .map(|v| {
+                    let x = *v as f32 / 32768.0;
+                    x * x
+                })
+                .sum::<f32>()
+                / frame.len() as f32;
+            if energy.sqrt() > 0.015 {
+                active_frames += 1;
+            }
+        }
+        if total_frames == 0 {
+            return 0.0;
+        }
+        let frame_s = frame_len as f32 / sample_rate as f32;
+        active_frames as f32 * frame_s
+    }
+
+    fn clip_motion_score(frames: &[Vec<u8>]) -> f32 {
+        if frames.len() < 2 {
+            return 1.0;
+        }
+        let mut total = 0.0f32;
+        let mut count = 0usize;
+        for pair in frames.windows(2) {
+            let a = &pair[0];
+            let b = &pair[1];
+            let min_len = a.len().min(b.len());
+            if min_len == 0 {
+                continue;
+            }
+            let mut diff_sum: u64 = 0;
+            for i in 0..min_len {
+                diff_sum += (a[i] as i32 - b[i] as i32).unsigned_abs() as u64;
+            }
+            let norm = diff_sum as f32 / (min_len as f32 * 255.0);
+            total += norm;
+            count += 1;
+        }
+        if count == 0 {
+            0.0
+        } else {
+            total / count as f32
+        }
+    }
+
+    async fn pick_best_clip_frame(&self, frames: &[Vec<u8>]) -> ClipSelectionSummary {
         let mut flags = Vec::new();
         let mut best: Option<ClipFrameAssessment> = None;
+        let mut detected_count = 0usize;
+        let mut live_count = 0usize;
+        let mut live_scores: Vec<f32> = Vec::new();
 
         for (index, frame) in frames.iter().enumerate() {
             match self.process_face_full(frame).await {
                 Ok(Some(face)) => {
+                    detected_count += 1;
+                    if face.is_live {
+                        live_count += 1;
+                    }
+                    live_scores.push(face.liveness_score);
                     let candidate = ClipFrameAssessment {
                         index,
                         detected: true,
@@ -220,6 +303,15 @@ impl GatewayService {
             }
         }
 
+        live_scores.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let median_liveness = if live_scores.is_empty() {
+            0.0
+        } else {
+            live_scores[live_scores.len() / 2]
+        };
+        let detected_ratio = detected_count as f32 / frames.len().max(1) as f32;
+        let live_ratio = live_count as f32 / frames.len().max(1) as f32;
+
         let has_best = best.is_some();
         let best_idx = best.as_ref().map(|f| f.index).unwrap_or(frames.len() / 2);
         if !has_best {
@@ -227,7 +319,14 @@ impl GatewayService {
         } else if frames.len() > 1 {
             flags.push("clip_mode_best_frame_selected".to_string());
         }
-        (best_idx, flags)
+
+        ClipSelectionSummary {
+            best_idx,
+            flags,
+            median_liveness,
+            live_ratio,
+            detected_ratio,
+        }
     }
 
     fn detect_hardware_profile() -> HardwareProfile {
@@ -789,33 +888,47 @@ impl Gatekeeper for GatewayService {
         response.face_liveness_score = face_info.liveness_score;
 
         // 2) Face identification
-        let user_match = sqlx::query(
+        let user_matches = sqlx::query(
             r#"
             SELECT u.id, u.name, (e.embedding <-> $1) as distance
             FROM face_embeddings e
             JOIN users u ON e.user_id = u.id
             ORDER BY distance ASC
-            LIMIT 1
+            LIMIT 2
             "#,
         )
         .bind(Vector::from(face_info.embedding))
-        .fetch_optional(&self.pool)
+        .fetch_all(&self.pool)
         .await
         .map_err(|e| Status::internal(format!("DB Error: {}", e)))?;
 
-        let (user_id, user_name, face_dist) = match user_match {
-            Some(rec) => {
-                let d: f64 = rec.get::<Option<f64>, _>("distance").unwrap_or(1.0);
-                let uid: i32 = rec.get("id");
-                let uname: String = rec.get("name");
-                (uid, uname, d)
-            }
-            None => (0, "Unknown".to_string(), 1.0),
+        let (user_id, user_name, face_dist) = if let Some(best) = user_matches.first() {
+            let d: f64 = best.get::<Option<f64>, _>("distance").unwrap_or(1.0);
+            let uid: i32 = best.get("id");
+            let uname: String = best.get("name");
+            (uid, uname, d)
+        } else {
+            (0, "Unknown".to_string(), 1.0)
         };
 
-        response.user_name = user_name.clone();
+        let second_face_dist = user_matches
+            .get(1)
+            .and_then(|r| r.get::<Option<f64>, _>("distance"))
+            .unwrap_or(1.0);
+        let face_margin = second_face_dist - face_dist;
+        let face_min_margin = std::env::var("FACE_MATCH_MIN_MARGIN")
+            .ok()
+            .and_then(|v| v.parse::<f64>().ok())
+            .unwrap_or(0.08);
+
         response.face_distance = face_dist as f32;
-        response.face_match = face_dist < self.face_similarity_threshold;
+        response.face_match =
+            face_dist < self.face_similarity_threshold && face_margin >= face_min_margin;
+        response.user_name = if response.face_match {
+            user_name.clone()
+        } else {
+            "Unknown".to_string()
+        };
 
         if !response.face_live {
             response.message = format!(
@@ -839,7 +952,11 @@ impl Gatekeeper for GatewayService {
         }
 
         if !response.face_match {
-            response.message = format!("Face not matched (distance {:.3})", face_dist);
+            response.user_name = "Unknown".into();
+            response.message = format!(
+                "Face not matched (distance {:.3}, margin {:.3}, threshold {:.3})",
+                face_dist, face_margin, self.face_similarity_threshold
+            );
             response.decision_stage = "face_match".into();
             self.log_access(
                 None,
@@ -921,10 +1038,34 @@ impl Gatekeeper for GatewayService {
             + confidence_adjust)
             .clamp(0.0, 1.0);
 
+        let min_confidence = std::env::var("ACCESS_MIN_CONFIDENCE")
+            .ok()
+            .and_then(|v| v.parse::<f32>().ok())
+            .unwrap_or(0.45)
+            .clamp(0.0, 1.0);
+        if response.final_confidence < min_confidence {
+            response.message = format!(
+                "Confidence too low ({:.2} < {:.2})",
+                response.final_confidence, min_confidence
+            );
+            response.decision_stage = "confidence_gate".into();
+            self.log_access(
+                Some(user_id),
+                device_id,
+                false,
+                &format!("DENIED [Confidence] {}", response.message),
+            )
+            .await;
+            return Ok(Response::new(response));
+        }
+
         // 4) Access policy check
         if device_id == self.test_device_id {
             response.granted = true;
-            response.message = "Welcome (Test Device)".into();
+            response.message = format!(
+                "Welcome {} (test device, conf {:.2})",
+                user_name, response.final_confidence
+            );
             response.decision_stage = "granted".into();
             self.log_access(
                 Some(user_id),
@@ -991,7 +1132,10 @@ impl Gatekeeper for GatewayService {
 
         if zone_rule_exists.is_some() || room_rule_exists.is_some() {
             response.granted = true;
-            response.message = format!("Welcome to {} / {}", zone_name, room_name);
+            response.message = format!(
+                "Welcome {} to {} / {} (conf {:.2})",
+                user_name, zone_name, room_name, response.final_confidence
+            );
             response.decision_stage = "granted".into();
             self.log_access(
                 Some(user_id),
@@ -1128,14 +1272,131 @@ impl Gatekeeper for GatewayService {
             flags.push("frame_timestamps_mismatch".to_string());
         }
 
-        let (best_idx, mut clip_flags) = self.pick_best_clip_frame(&req.frames).await;
+        let motion_score = Self::clip_motion_score(&req.frames);
+        let min_motion = std::env::var("ACCESS_CLIP_MIN_MOTION")
+            .ok()
+            .and_then(|v| v.parse::<f32>().ok())
+            .unwrap_or(0.012);
+        if req.frames.len() >= 2 && motion_score < min_motion {
+            flags.push(format!("low_clip_motion:{:.4}", motion_score));
+            return Ok(Response::new(AccessCheckResponseV2 {
+                granted: false,
+                stage: 3,
+                reason: format!(
+                    "Clip motion too low ({:.4} < {:.4}), possible photo replay",
+                    motion_score, min_motion
+                ),
+                confidence: 0.0,
+                user_id: 0,
+                user_name: "Unknown".to_string(),
+                face_detected: false,
+                face_quality: 0.0,
+                face_live_score: 0.0,
+                face_live: false,
+                face_distance: 1.0,
+                face_match: false,
+                voice_provided: !req.audio.is_empty(),
+                speech_present: !req.audio.is_empty(),
+                voice_live_score: 0.0,
+                voice_live: false,
+                voice_distance: 1.0,
+                voice_match: false,
+                suspicious_audio: false,
+                flags,
+                session_id: req.session_id,
+            }));
+        }
+
+        let clip = self.pick_best_clip_frame(&req.frames).await;
+        let mut clip_flags = clip.flags;
         flags.append(&mut clip_flags);
 
-        let speech_present = !req.audio.is_empty();
+        let speech_seconds = Self::estimate_speech_seconds(
+            &req.audio,
+            if req.audio_sample_rate == 0 {
+                16000
+            } else {
+                req.audio_sample_rate
+            },
+        );
+        let min_speech_seconds = std::env::var("ACCESS_MIN_SPEECH_SECONDS")
+            .ok()
+            .and_then(|v| v.parse::<f32>().ok())
+            .unwrap_or(0.60);
+        let speech_present = speech_seconds >= min_speech_seconds;
+        if !req.audio.is_empty() {
+            flags.push(format!("speech_seconds:{:.2}", speech_seconds));
+        }
+
+        let min_clip_liveness = std::env::var("ACCESS_CLIP_MIN_MEDIAN_LIVENESS")
+            .ok()
+            .and_then(|v| v.parse::<f32>().ok())
+            .unwrap_or(0.55)
+            .clamp(0.0, 1.0);
+        let min_clip_live_ratio = std::env::var("ACCESS_CLIP_MIN_LIVE_RATIO")
+            .ok()
+            .and_then(|v| v.parse::<f32>().ok())
+            .unwrap_or(0.34)
+            .clamp(0.0, 1.0);
+        let min_clip_detected_ratio = std::env::var("ACCESS_CLIP_MIN_DETECTED_RATIO")
+            .ok()
+            .and_then(|v| v.parse::<f32>().ok())
+            .unwrap_or(0.50)
+            .clamp(0.0, 1.0);
+
+        if clip.detected_ratio < min_clip_detected_ratio
+            || clip.live_ratio < min_clip_live_ratio
+            || clip.median_liveness < min_clip_liveness
+        {
+            flags.push(format!(
+                "clip_liveness_gate:det={:.2},live={:.2},med={:.2}",
+                clip.detected_ratio, clip.live_ratio, clip.median_liveness
+            ));
+            return Ok(Response::new(AccessCheckResponseV2 {
+                granted: false,
+                stage: 3,
+                reason: format!(
+                    "Clip liveness gate failed (det {:.2}/{:.2}, live {:.2}/{:.2}, median {:.2}/{:.2})",
+                    clip.detected_ratio,
+                    min_clip_detected_ratio,
+                    clip.live_ratio,
+                    min_clip_live_ratio,
+                    clip.median_liveness,
+                    min_clip_liveness
+                ),
+                confidence: 0.0,
+                user_id: 0,
+                user_name: "Unknown".to_string(),
+                face_detected: clip.detected_ratio > 0.0,
+                face_quality: clip.detected_ratio,
+                face_live_score: clip.median_liveness,
+                face_live: false,
+                face_distance: 1.0,
+                face_match: false,
+                voice_provided: !req.audio.is_empty(),
+                speech_present: !req.audio.is_empty(),
+                voice_live_score: 0.0,
+                voice_live: false,
+                voice_distance: 1.0,
+                voice_match: false,
+                suspicious_audio: false,
+                flags,
+                session_id: req.session_id,
+            }));
+        }
+
+        let audio_for_legacy = if speech_present {
+            req.audio.clone()
+        } else {
+            Vec::new()
+        };
+        if !req.audio.is_empty() && !speech_present {
+            flags.push("insufficient_speech".to_string());
+        }
         let legacy_req = CheckAccessRequest {
             device_id: req.device_id,
-            image: req.frames[best_idx].clone(),
-            audio: req.audio,
+            image: req.frames[clip.best_idx].clone(),
+            audio: audio_for_legacy,
             audio_sample_rate: req.audio_sample_rate,
         };
         let legacy_resp = self
