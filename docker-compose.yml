@@ -114,6 +114,29 @@ services:
       vision-worker:
         condition: service_started
 
+  door-agent:
+    image: identification-rust-base:latest
+    container_name: door-agent
+    working_dir: /workspace/identification
+    command: ["bash", "-lc", "cargo run --release -p door-agent"]
+    cpuset: "${DOOR_AGENT_CPUSET:-0-1}"
+    ports:
+      - "50054:50054"
+    volumes:
+      - .:/workspace/identification
+      - cargo-registry:/usr/local/cargo/registry
+      - cargo-git:/usr/local/cargo/git
+      - target-cache-door-agent:/workspace/identification/target
+    environment:
+      RUST_LOG: "${RUST_LOG:-door_agent=info}"
+      GATEWAY_ADDR: "http://gateway-service:50051"
+      DOOR_MAX_CLIP_FRAMES: "${DOOR_MAX_CLIP_FRAMES:-3}"
+      DOOR_PRESENCE_TIMEOUT_MS: "${DOOR_PRESENCE_TIMEOUT_MS:-1500}"
+      DOOR_COOLDOWN_MS: "${DOOR_COOLDOWN_MS:-2000}"
+    depends_on:
+      gateway-service:
+        condition: service_started
+
 volumes:
   db-data:
   cargo-registry:
@@ -121,3 +144,4 @@ volumes:
   target-cache-vision:
   target-cache-audio:
   target-cache-gateway:
+  target-cache-door-agent:

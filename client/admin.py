@@ -64,6 +64,9 @@ class BiometryClient:
         self.audio_channel = grpc.insecure_channel(f"{host}:50053")
         self.vision_stub = biometry_pb2_grpc.VisionStub(self.vision_channel)
         self.audio_stub = biometry_pb2_grpc.AudioStub(self.audio_channel)
+        self.door_channel = grpc.insecure_channel(f"{host}:50054")
+        self.door_stub = getattr(biometry_pb2_grpc, "DoorAgentStub", None)
+        self.door_stub = self.door_stub(self.door_channel) if self.door_stub else None
 
     def wait_until_ready(self, total_timeout=45.0, probe_timeout=2.0):
         # Для Docker-старта gateway может подняться не мгновенно:
@@ -165,6 +168,21 @@ class BiometryClient:
 
     def get_logs(self, limit=50, offset=0):
         return self.stub.GetLogs(biometry_pb2.GetLogsRequest(limit=limit, offset=offset)).logs
+
+    def submit_door_observation(self, session_id, device_id, frame, audio=b"", sample_rate=16000, timestamp_ms=0):
+        if self.door_stub is None:
+            return None
+        req_cls = getattr(biometry_pb2, "DoorObservationRequest", None)
+        if req_cls is None:
+            return None
+        return self.door_stub.SubmitObservation(req_cls(
+            session_id=session_id,
+            device_id=device_id,
+            frame=frame,
+            timestamp_ms=timestamp_ms,
+            audio=audio or b"",
+            audio_sample_rate=sample_rate,
+        ))
 
     def check_access(self, device_id, image_bytes, audio_bytes=None, sample_rate=16000):
         field_map = self._message_field_map(biometry_pb2.CheckAccessRequest)
@@ -797,6 +815,22 @@ class MonitoringTab(QWidget):
                         clip_ts.append(int(time.time() * 1000))
 
                     session_id = f"ui-{dev_id}-{uuid.uuid4().hex[:8]}"
+                    door_resp = self.client.submit_door_observation(
+                        session_id=session_id,
+                        device_id=dev_id,
+                        frame=frame,
+                        audio=audio_bytes or b"",
+                        sample_rate=16000,
+                        timestamp_ms=clip_ts[0],
+                    )
+                    if door_resp is not None and getattr(door_resp, "pending", False):
+                        self.pipeline_inflight = False
+                        self.pipeline_stage = "presence"
+                        self.append_pipeline_log(
+                            f"[DOOR] stage={getattr(door_resp, 'stage', 0)} pending: {getattr(door_resp, 'reason', '')}"
+                        )
+                        continue
+
                     access_v2 = self.client.check_access_v2(
                         session_id=session_id,
                         device_id=dev_id,
@@ -806,7 +840,19 @@ class MonitoringTab(QWidget):
                         frame_timestamps_ms=clip_ts,
                     )
 
-                    if access_v2 is not None:
+                    if door_resp is not None and not getattr(door_resp, "pending", False):
+                        class AccessCompat:
+                            pass
+                        access = AccessCompat()
+                        access.user_name = getattr(door_resp, "user_name", "Unknown")
+                        access.granted = getattr(door_resp, "access_granted", False)
+                        access.message = getattr(door_resp, "reason", "")
+                        access.final_confidence = float(getattr(door_resp, "confidence", 0.0))
+                        self.append_pipeline_log(
+                            f"[DOOR] stage={getattr(door_resp, 'stage', 0)} conf={access.final_confidence:.2f} "
+                            f"flags={list(getattr(door_resp, 'flags', []))} reason={access.message}"
+                        )
+                    elif access_v2 is not None:
                         class AccessCompat:
                             pass
                         access = AccessCompat()
