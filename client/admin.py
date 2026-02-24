@@ -16,8 +16,8 @@ from PyQt6.QtWidgets import (
     QTreeWidget, QTreeWidgetItem, QTreeWidgetItemIterator, QHeaderView, QSplitter, QCheckBox, QTableWidget, QTableWidgetItem,
     QScrollArea, QTextEdit, QGridLayout
 )
-from PyQt6.QtGui import QImage, QPixmap, QPalette, QColor, QFont, QIcon
-from PyQt6.QtCore import Qt, QTimer, QSize, QThread, pyqtSignal, QMutex
+from PyQt6.QtGui import QImage, QPixmap, QPalette, QColor, QFont
+from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal, QMutex
 
 import biometry_pb2
 import biometry_pb2_grpc
