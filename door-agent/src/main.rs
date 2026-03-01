@@ -2,9 +2,10 @@ use shared::biometry::door_agent_server::{DoorAgent, DoorAgentServer};
 use shared::biometry::gatekeeper_client::GatekeeperClient;
 use shared::biometry::{
     CheckAccessRequestV2, DoorAgentStatusResponse, DoorObservationRequest, DoorObservationResponse,
-    DoorPipelineStage, Empty,
+    DoorPipelineStage, Empty, ListDevicesRequest,
 };
 use std::collections::HashMap;
+use tokio::process::Command;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::Mutex;
@@ -29,6 +30,25 @@ struct DoorAgentService {
     max_clip_frames: usize,
     presence_timeout_ms: i64,
     cooldown_ms: i64,
+}
+
+#[derive(Clone)]
+struct RoomPointConfig {
+    room_id: i32,
+    camera_device_id: i32,
+    camera_conn: String,
+    microphone_conn: Option<String>,
+}
+
+fn env_parse<T: std::str::FromStr>(name: &str, default: T) -> T {
+    std::env::var(name)
+        .ok()
+        .and_then(|v| v.parse::<T>().ok())
+        .unwrap_or(default)
+}
+
+fn env_flag(name: &str, default: bool) -> bool {
+    env_parse::<i32>(name, if default { 1 } else { 0 }) != 0
 }
 
 impl DoorAgentService {
@@ -90,6 +110,207 @@ impl DoorAgentService {
             pending,
             flags,
         }
+    }
+}
+
+fn now_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_else(|_| Duration::from_millis(0))
+        .as_millis() as i64
+}
+
+fn camera_input_from_conn(conn: &str) -> String {
+    if conn.starts_with("/dev/video") || conn.starts_with("rtsp://") || conn.starts_with("http://") || conn.starts_with("https://") {
+        return conn.to_string();
+    }
+    if conn.chars().all(|c| c.is_ascii_digit()) {
+        return format!("/dev/video{}", conn);
+    }
+    conn.to_string()
+}
+
+async fn capture_single_jpeg(conn: &str) -> Option<Vec<u8>> {
+    let input = camera_input_from_conn(conn);
+    let source_arg = if input.starts_with("/dev/video") {
+        format!("-f v4l2 -i '{}'", input.replace('\'', ""))
+    } else {
+        format!("-i '{}'", input.replace('\'', ""))
+    };
+    let output = Command::new("bash")
+        .arg("-lc")
+        .arg(format!(
+            "ffmpeg -loglevel error -y {} -frames:v 1 -f image2pipe -vcodec mjpeg -",
+            source_arg
+        ))
+        .output()
+        .await
+        .ok()?;
+    if !output.status.success() || output.stdout.is_empty() {
+        return None;
+    }
+    Some(output.stdout)
+}
+
+async fn capture_mic_raw(conn: &str, duration_s: f32) -> Option<Vec<u8>> {
+    let sec = duration_s.max(0.2);
+    let output = Command::new("bash")
+        .arg("-lc")
+        .arg(format!(
+            "arecord -q -D '{}' -r 16000 -c 1 -f S16_LE -d {} -t raw -",
+            conn.replace('\'', ""),
+            sec.ceil() as i32
+        ))
+        .output()
+        .await
+        .ok()?;
+    if !output.status.success() || output.stdout.is_empty() {
+        return None;
+    }
+    Some(output.stdout)
+}
+
+async fn discover_room_points(gateway_addr: &str) -> Result<Vec<RoomPointConfig>, Status> {
+    let mut client = GatekeeperClient::connect(gateway_addr.to_string())
+        .await
+        .map_err(|e| Status::unavailable(format!("gateway connect failed: {e}")))?;
+    let devices = client
+        .list_devices(Request::new(ListDevicesRequest {}))
+        .await
+        .map_err(|e| Status::internal(format!("list_devices failed: {e}")))?
+        .into_inner()
+        .devices;
+
+    let mut by_room: HashMap<i32, Vec<shared::biometry::Device>> = HashMap::new();
+    for d in devices {
+        by_room.entry(d.room_id).or_default().push(d);
+    }
+
+    let mut out = Vec::new();
+    for (room_id, ds) in by_room {
+        let cameras: Vec<_> = ds.iter().filter(|d| d.device_type == "camera").collect();
+        let locks: Vec<_> = ds.iter().filter(|d| d.device_type == "lock").collect();
+        let microphones: Vec<_> = ds.iter().filter(|d| d.device_type == "microphone").collect();
+        if cameras.len() != 1 || locks.len() != 1 || microphones.len() > 1 {
+            tracing::warn!(
+                "room {} disabled in background mode: camera={}, lock={}, microphone={}",
+                room_id,
+                cameras.len(),
+                locks.len(),
+                microphones.len()
+            );
+            continue;
+        }
+        out.push(RoomPointConfig {
+            room_id,
+            camera_device_id: cameras[0].id,
+            camera_conn: cameras[0].connection_string.clone(),
+            microphone_conn: microphones.first().map(|d| d.connection_string.clone()),
+        });
+    }
+    Ok(out)
+}
+
+async fn run_background_live_loop(gateway_addr: String) {
+    let enabled = env_flag("DOOR_BACKGROUND_ENABLED", true);
+    if !enabled {
+        tracing::info!("door-agent background loop disabled by DOOR_BACKGROUND_ENABLED=0");
+        return;
+    }
+    let frames_per_check = env_parse::<usize>("DOOR_BG_FRAMES", 3).max(1);
+    let tick_ms = env_parse::<u64>("DOOR_BG_TICK_MS", 500).max(100);
+    let cooldown_ms = env_parse::<i64>("DOOR_BG_COOLDOWN_MS", 2500).max(500);
+    let use_microphone = env_flag("DOOR_BG_USE_MIC", true);
+    let run_flag_path = std::env::var("SYSTEM_RUN_FLAG_PATH")
+        .unwrap_or_else(|_| "/workspace/identification/.system_run".to_string());
+
+    let mut next_allowed_ms: HashMap<i32, i64> = HashMap::new();
+    loop {
+        let running = tokio::fs::read_to_string(&run_flag_path)
+            .await
+            .map(|s| s.trim() == "1")
+            .unwrap_or(false);
+        if !running {
+            tokio::time::sleep(Duration::from_millis(tick_ms)).await;
+            continue;
+        }
+        match discover_room_points(&gateway_addr).await {
+            Ok(points) => {
+                for point in points {
+                    let now = now_ms();
+                    if now < *next_allowed_ms.get(&point.room_id).unwrap_or(&0) {
+                        continue;
+                    }
+                    let mut frames = Vec::new();
+                    let mut ts = Vec::new();
+                    for _ in 0..frames_per_check {
+                        if let Some(frame) = capture_single_jpeg(&point.camera_conn).await {
+                            frames.push(frame);
+                            ts.push(now_ms());
+                        }
+                    }
+                    if frames.is_empty() {
+                        tracing::warn!(
+                            "background point room {} skipped: camera capture failed ({})",
+                            point.room_id,
+                            point.camera_conn
+                        );
+                        next_allowed_ms.insert(point.room_id, now + cooldown_ms);
+                        continue;
+                    }
+                    let audio = if use_microphone {
+                        match &point.microphone_conn {
+                            Some(mic) => capture_mic_raw(mic, 1.0).await.unwrap_or_default(),
+                            None => Vec::new(),
+                        }
+                    } else {
+                        Vec::new()
+                    };
+                    let mut client = match GatekeeperClient::connect(gateway_addr.clone()).await {
+                        Ok(c) => c,
+                        Err(e) => {
+                            tracing::warn!("background connect failed: {}", e);
+                            break;
+                        }
+                    };
+                    let req = CheckAccessRequestV2 {
+                        session_id: format!("bg-room-{}-{}", point.room_id, now),
+                        device_id: point.camera_device_id,
+                        frames,
+                        audio,
+                        audio_sample_rate: 16000,
+                        frame_timestamps_ms: ts,
+                    };
+                    match client.check_access_v2(req).await {
+                        Ok(resp) => {
+                            let r = resp.into_inner();
+                            tracing::info!(
+                                "bg room={} device={} granted={} stage={} conf={:.2} reason={}",
+                                point.room_id,
+                                point.camera_device_id,
+                                r.granted,
+                                r.stage,
+                                r.confidence,
+                                r.reason
+                            );
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                "bg check_access_v2 failed room={} device={}: {}",
+                                point.room_id,
+                                point.camera_device_id,
+                                e
+                            );
+                        }
+                    }
+                    next_allowed_ms.insert(point.room_id, now + cooldown_ms);
+                }
+            }
+            Err(e) => {
+                tracing::warn!("background discovery failed: {}", e.message());
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(tick_ms)).await;
     }
 }
 
@@ -219,10 +440,7 @@ impl DoorAgent for DoorAgentService {
             DoorPipelineStage::DoorStagePresence as i32
         };
 
-<<<<<<< codex/review-database-structure-and-normalization-6qlwnh
         let flags = Self::build_pipeline_flags(&result);
-=======
->>>>>>> master
         Ok(Response::new(Self::mk_response(
             result.granted,
             stage,
@@ -230,11 +448,7 @@ impl DoorAgent for DoorAgentService {
             result.confidence,
             result.user_name,
             false,
-<<<<<<< codex/review-database-structure-and-normalization-6qlwnh
             flags,
-=======
-            result.flags,
->>>>>>> master
         )))
     }
 
@@ -264,29 +478,19 @@ async fn main() -> anyhow::Result<()> {
         std::env::var("DOOR_AGENT_ADDR").unwrap_or_else(|_| "0.0.0.0:50054".to_string());
     let gateway_addr =
         std::env::var("GATEWAY_ADDR").unwrap_or_else(|_| "http://127.0.0.1:50051".to_string());
-    let max_clip_frames = std::env::var("DOOR_MAX_CLIP_FRAMES")
-        .ok()
-        .and_then(|v| v.parse::<usize>().ok())
-        .unwrap_or(3)
-        .max(1);
-    let presence_timeout_ms = std::env::var("DOOR_PRESENCE_TIMEOUT_MS")
-        .ok()
-        .and_then(|v| v.parse::<i64>().ok())
-        .unwrap_or(1500)
-        .max(200);
-    let cooldown_ms = std::env::var("DOOR_COOLDOWN_MS")
-        .ok()
-        .and_then(|v| v.parse::<i64>().ok())
-        .unwrap_or(2000)
-        .max(200);
+    let max_clip_frames = env_parse::<usize>("DOOR_MAX_CLIP_FRAMES", 3).max(1);
+    let presence_timeout_ms = env_parse::<i64>("DOOR_PRESENCE_TIMEOUT_MS", 1500).max(200);
+    let cooldown_ms = env_parse::<i64>("DOOR_COOLDOWN_MS", 2000).max(200);
 
     let svc = DoorAgentService {
         states: Arc::new(Mutex::new(HashMap::new())),
-        gateway_addr,
+        gateway_addr: gateway_addr.clone(),
         max_clip_frames,
         presence_timeout_ms,
         cooldown_ms,
     };
+
+    tokio::spawn(run_background_live_loop(gateway_addr));
 
     tracing::info!("door-agent listening on {}", listen_addr);
     Server::builder()

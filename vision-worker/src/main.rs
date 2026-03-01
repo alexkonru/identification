@@ -22,6 +22,65 @@ use tracing::{debug, error, info, warn};
 const YUNET_INPUT_WIDTH: u32 = 640;
 const YUNET_INPUT_HEIGHT: u32 = 640;
 
+fn l2_normalize_embedding(mut emb: Vec<f32>) -> Vec<f32> {
+    if emb.is_empty() {
+        return emb;
+    }
+    let norm_sq: f32 = emb.iter().map(|v| v * v).sum();
+    if norm_sq <= 1e-12 {
+        return emb;
+    }
+    let inv = norm_sq.sqrt().recip();
+    for v in &mut emb {
+        *v *= inv;
+    }
+    emb
+}
+
+fn face_mean_luma(face: &ImageBuffer<image::Rgb<u8>, Vec<u8>>) -> f32 {
+    let mut sum = 0.0f32;
+    let mut count = 0usize;
+    for p in face.pixels() {
+        let r = p[0] as f32;
+        let g = p[1] as f32;
+        let b = p[2] as f32;
+        sum += 0.299 * r + 0.587 * g + 0.114 * b;
+        count += 1;
+    }
+    if count == 0 {
+        0.0
+    } else {
+        (sum / count as f32) / 255.0
+    }
+}
+
+fn face_sharpness_score(face: &ImageBuffer<image::Rgb<u8>, Vec<u8>>) -> f32 {
+    let w = face.width() as i32;
+    let h = face.height() as i32;
+    if w < 3 || h < 3 {
+        return 0.0;
+    }
+    let gray_at = |x: i32, y: i32| {
+        let p = face.get_pixel(x as u32, y as u32);
+        0.299 * p[0] as f32 + 0.587 * p[1] as f32 + 0.114 * p[2] as f32
+    };
+    let mut acc = 0.0f32;
+    let mut cnt = 0usize;
+    for y in 1..(h - 1) {
+        for x in 1..(w - 1) {
+            let gx = (gray_at(x + 1, y) - gray_at(x - 1, y)).abs();
+            let gy = (gray_at(x, y + 1) - gray_at(x, y - 1)).abs();
+            acc += 0.5 * (gx + gy);
+            cnt += 1;
+        }
+    }
+    if cnt == 0 {
+        0.0
+    } else {
+        (acc / cnt as f32) / 255.0
+    }
+}
+
 fn is_cuda_runtime_failure(err: &str) -> bool {
     err.contains("cudaError") || err.contains("CUDA error")
 }
@@ -605,12 +664,23 @@ impl Vision for VisionService {
 
         let outputs_yunet_slice = outputs_yunet_vec.as_slice();
 
+        let det_score_threshold = std::env::var("VISION_DET_SCORE_THRESHOLD")
+            .ok()
+            .and_then(|v| v.parse::<f32>().ok())
+            .unwrap_or(0.75)
+            .clamp(0.1, 0.99);
+        let nms_threshold = std::env::var("VISION_DET_NMS_THRESHOLD")
+            .ok()
+            .and_then(|v| v.parse::<f32>().ok())
+            .unwrap_or(0.3)
+            .clamp(0.05, 0.95);
+
         let detected_faces = decode_yunet_output(
             outputs_yunet_slice,
             original_width,
             original_height,
-            0.9, // score_threshold (tunable)
-            0.3, // nms_threshold (tunable)
+            det_score_threshold,
+            nms_threshold,
         )
         .map_err(|e| Status::internal(format!("Ошибка декодирования вывода Yunet: {}", e)))?;
 
@@ -636,17 +706,122 @@ impl Vision for VisionService {
         };
 
         // Crop the face
-        let x = best_face.bbox[0].max(0.0).floor() as u32;
-        let y = best_face.bbox[1].max(0.0).floor() as u32;
-        let w = best_face.bbox[2]
-            .min(original_width as f32 - x as f32)
-            .floor() as u32;
-        let h = best_face.bbox[3]
-            .min(original_height as f32 - y as f32)
-            .floor() as u32;
+        let mut x = best_face.bbox[0].max(0.0).floor() as i32;
+        let mut y = best_face.bbox[1].max(0.0).floor() as i32;
+        let mut w = best_face.bbox[2].max(0.0).floor() as i32;
+        let mut h = best_face.bbox[3].max(0.0).floor() as i32;
+
+        // Slight margin improves robustness on tight/unstable detections.
+        let margin_x = ((w as f32) * 0.12).round() as i32;
+        let margin_y = ((h as f32) * 0.15).round() as i32;
+        x = (x - margin_x).max(0);
+        y = (y - margin_y).max(0);
+        w += margin_x * 2;
+        h += margin_y * 2;
+
+        let max_w = original_width as i32 - x;
+        let max_h = original_height as i32 - y;
+        w = w.min(max_w).max(0);
+        h = h.min(max_h).max(0);
+
+        let min_face_size_px = std::env::var("VISION_MIN_FACE_SIZE_PX")
+            .ok()
+            .and_then(|v| v.parse::<i32>().ok())
+            .unwrap_or(80)
+            .max(24);
+        let min_face_short_ratio = std::env::var("VISION_MIN_FACE_SHORT_RATIO")
+            .ok()
+            .and_then(|v| v.parse::<f32>().ok())
+            .unwrap_or(0.55)
+            .clamp(0.30, 1.0);
+        let min_short_side = ((min_face_size_px as f32) * min_face_short_ratio).round() as i32;
+        let frame_area = (original_width as f32) * (original_height as f32);
+        let min_face_area_ratio = std::env::var("VISION_MIN_FACE_AREA_RATIO")
+            .ok()
+            .and_then(|v| v.parse::<f32>().ok())
+            .unwrap_or(0.02)
+            .clamp(0.0, 1.0);
+        let face_area_ratio = ((w * h) as f32 / frame_area).clamp(0.0, 1.0);
+        let long_side = w.max(h);
+        let short_side = w.min(h);
+        if long_side < min_face_size_px || short_side < min_short_side || face_area_ratio < min_face_area_ratio {
+            return Ok(Response::new(BioResult {
+                detected: false,
+                is_live: false,
+                liveness_score: 0.0,
+                embedding: vec![],
+                error_msg: format!(
+                    "Face quality low: size={}x{}, long_min={}, short_min={}, area_ratio={:.3}",
+                    w, h, min_face_size_px, min_short_side, face_area_ratio
+                ),
+                execution_provider: self
+                    .models
+                    .provider
+                    .lock()
+                    .map(|v| v.clone())
+                    .unwrap_or_else(|_| "unknown".to_string()),
+            }));
+        }
 
         let cropped_face_img =
-            ImageBuffer::from_fn(w, h, |px, py| rgb_img.get_pixel(x + px, y + py).to_owned());
+            ImageBuffer::from_fn(w as u32, h as u32, |px, py| {
+                rgb_img
+                    .get_pixel((x as u32) + px, (y as u32) + py)
+                    .to_owned()
+            });
+        let face_luma = face_mean_luma(&cropped_face_img);
+        let min_luma = std::env::var("VISION_MIN_FACE_LUMA")
+            .ok()
+            .and_then(|v| v.parse::<f32>().ok())
+            .unwrap_or(0.10)
+            .clamp(0.0, 1.0);
+        let max_luma = std::env::var("VISION_MAX_FACE_LUMA")
+            .ok()
+            .and_then(|v| v.parse::<f32>().ok())
+            .unwrap_or(0.95)
+            .clamp(0.0, 1.0);
+        if face_luma < min_luma || face_luma > max_luma {
+            return Ok(Response::new(BioResult {
+                detected: false,
+                is_live: false,
+                liveness_score: 0.0,
+                embedding: vec![],
+                error_msg: format!(
+                    "Face quality low: luma={:.3} (allowed {:.2}..{:.2})",
+                    face_luma, min_luma, max_luma
+                ),
+                execution_provider: self
+                    .models
+                    .provider
+                    .lock()
+                    .map(|v| v.clone())
+                    .unwrap_or_else(|_| "unknown".to_string()),
+            }));
+        }
+        let sharpness = face_sharpness_score(&cropped_face_img);
+        let min_sharpness = std::env::var("VISION_MIN_FACE_SHARPNESS")
+            .ok()
+            .and_then(|v| v.parse::<f32>().ok())
+            .unwrap_or(0.030)
+            .clamp(0.0, 1.0);
+        if sharpness < min_sharpness {
+            return Ok(Response::new(BioResult {
+                detected: false,
+                is_live: false,
+                liveness_score: 0.0,
+                embedding: vec![],
+                error_msg: format!(
+                    "Face quality low: sharpness={:.3} (< {:.3})",
+                    sharpness, min_sharpness
+                ),
+                execution_provider: self
+                    .models
+                    .provider
+                    .lock()
+                    .map(|v| v.clone())
+                    .unwrap_or_else(|_| "unknown".to_string()),
+            }));
+        }
 
         // --- Шаг 3: Распознавание (ArcFace) ---
         let resized_arc =
@@ -683,7 +858,7 @@ impl Vision for VisionService {
             Status::internal(format!("Ошибка извлечения результата ArcFace: {}", e))
         })?;
 
-        let embedding_vec: Vec<f32> = embedding_slice.to_vec();
+        let embedding_vec: Vec<f32> = l2_normalize_embedding(embedding_slice.to_vec());
 
         // --- Шаг 4: Liveness (MiniFASNetV2) ---
         let resized_live =
@@ -728,7 +903,12 @@ impl Vision for VisionService {
             live_out.get(0).cloned().unwrap_or(0.0)
         };
 
-        let is_live = liveness_score > 0.5;
+        let min_liveness = std::env::var("VISION_MIN_LIVENESS")
+            .ok()
+            .and_then(|v| v.parse::<f32>().ok())
+            .unwrap_or(0.85)
+            .clamp(0.0, 1.0);
+        let is_live = liveness_score >= min_liveness;
 
         let provider = self
             .models

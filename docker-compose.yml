@@ -39,6 +39,15 @@ services:
       VISION_CUDA_MEM_LIMIT_MB: "${VISION_CUDA_MEM_LIMIT_MB:-1024}"
       VISION_INTRA_THREADS: "${VISION_INTRA_THREADS:-2}"
       VISION_INTER_THREADS: "${VISION_INTER_THREADS:-1}"
+      VISION_DET_SCORE_THRESHOLD: "${VISION_DET_SCORE_THRESHOLD:-0.60}"
+      VISION_DET_NMS_THRESHOLD: "${VISION_DET_NMS_THRESHOLD:-0.30}"
+      VISION_MIN_LIVENESS: "${VISION_MIN_LIVENESS:-0.85}"
+      VISION_MIN_FACE_SIZE_PX: "${VISION_MIN_FACE_SIZE_PX:-52}"
+      VISION_MIN_FACE_SHORT_RATIO: "${VISION_MIN_FACE_SHORT_RATIO:-0.50}"
+      VISION_MIN_FACE_AREA_RATIO: "${VISION_MIN_FACE_AREA_RATIO:-0.008}"
+      VISION_MIN_FACE_LUMA: "${VISION_MIN_FACE_LUMA:-0.10}"
+      VISION_MAX_FACE_LUMA: "${VISION_MAX_FACE_LUMA:-0.95}"
+      VISION_MIN_FACE_SHARPNESS: "${VISION_MIN_FACE_SHARPNESS:-0.015}"
       OPENBLAS_NUM_THREADS: "${OPENBLAS_NUM_THREADS:-1}"
       ORT_STRATEGY: "${ORT_STRATEGY:-download}"
       NVIDIA_VISIBLE_DEVICES: "${NVIDIA_VISIBLE_DEVICES:-all}"
@@ -98,13 +107,32 @@ services:
       - cargo-registry:/usr/local/cargo/registry
       - cargo-git:/usr/local/cargo/git
       - target-cache-gateway:/workspace/identification/target
+    devices:
+      - "/dev/video0:/dev/video0"
+      - "/dev/snd:/dev/snd"
     environment:
       RUST_LOG: "${RUST_LOG:-gateway_service=info}"
       DATABASE_URL: "postgres://user:password@db:5432/biometry_db"
       AUDIO_URL: "http://audio-worker:50053"
       VISION_URL: "http://vision-worker:50052"
-      FACE_SIMILARITY_THRESHOLD: "${FACE_SIMILARITY_THRESHOLD:-0.6}"
-      VOICE_SIMILARITY_THRESHOLD: "${VOICE_SIMILARITY_THRESHOLD:-0.6}"
+      FACE_SIMILARITY_THRESHOLD: "${FACE_SIMILARITY_THRESHOLD:-0.36}"
+      VOICE_SIMILARITY_THRESHOLD: "${VOICE_SIMILARITY_THRESHOLD:-0.45}"
+      ACCESS_STRICT_FACE_DISTANCE: "${ACCESS_STRICT_FACE_DISTANCE:-0.36}"
+      FACE_MATCH_MIN_MARGIN: "${FACE_MATCH_MIN_MARGIN:-0.18}"
+      FACE_SINGLE_STRICT_DISTANCE: "${FACE_SINGLE_STRICT_DISTANCE:-0.28}"
+      ACCESS_MIN_CONFIDENCE: "${ACCESS_MIN_CONFIDENCE:-0.60}"
+      ACCESS_CLIP_MIN_MOTION: "${ACCESS_CLIP_MIN_MOTION:-0.025}"
+      ACCESS_REQUIRE_SPEECH: "${ACCESS_REQUIRE_SPEECH:-0}"
+      ACCESS_MIN_SPEECH_SECONDS: "${ACCESS_MIN_SPEECH_SECONDS:-0.35}"
+      ACCESS_CLIP_MIN_MEDIAN_LIVENESS: "${ACCESS_CLIP_MIN_MEDIAN_LIVENESS:-0.75}"
+      ACCESS_CLIP_MIN_LIVE_RATIO: "${ACCESS_CLIP_MIN_LIVE_RATIO:-0.67}"
+      ACCESS_CLIP_MIN_DETECTED_RATIO: "${ACCESS_CLIP_MIN_DETECTED_RATIO:-0.67}"
+      DOOR_CONTROLLER_LOG_PATH: "${DOOR_CONTROLLER_LOG_PATH:-/workspace/identification/door_controller_state.log}"
+      LOCKS_DIR: "${LOCKS_DIR:-/workspace/identification/locks}"
+      DOOR_OPEN_MS: "${DOOR_OPEN_MS:-5000}"
+      DOOR_AUTO_OPEN_ON_GRANT: "${DOOR_AUTO_OPEN_ON_GRANT:-1}"
+      DOOR_OPEN_STARTUP_WARMUP_MS: "${DOOR_OPEN_STARTUP_WARMUP_MS:-15000}"
+      SYSTEM_RUN_FLAG_PATH: "${SYSTEM_RUN_FLAG_PATH:-/workspace/identification/.system_run}"
       TEST_DEVICE_ID: "${TEST_DEVICE_ID:-9999}"
     depends_on:
       db:
@@ -127,12 +155,21 @@ services:
       - cargo-registry:/usr/local/cargo/registry
       - cargo-git:/usr/local/cargo/git
       - target-cache-door-agent:/workspace/identification/target
+    devices:
+      - "/dev/video0:/dev/video0"
+      - "/dev/snd:/dev/snd"
     environment:
       RUST_LOG: "${RUST_LOG:-door_agent=info}"
       GATEWAY_ADDR: "http://gateway-service:50051"
       DOOR_MAX_CLIP_FRAMES: "${DOOR_MAX_CLIP_FRAMES:-3}"
       DOOR_PRESENCE_TIMEOUT_MS: "${DOOR_PRESENCE_TIMEOUT_MS:-1500}"
       DOOR_COOLDOWN_MS: "${DOOR_COOLDOWN_MS:-2000}"
+      DOOR_BACKGROUND_ENABLED: "${DOOR_BACKGROUND_ENABLED:-1}"
+      DOOR_BG_FRAMES: "${DOOR_BG_FRAMES:-3}"
+      DOOR_BG_TICK_MS: "${DOOR_BG_TICK_MS:-500}"
+      DOOR_BG_COOLDOWN_MS: "${DOOR_BG_COOLDOWN_MS:-2500}"
+      DOOR_BG_USE_MIC: "${DOOR_BG_USE_MIC:-1}"
+      SYSTEM_RUN_FLAG_PATH: "${SYSTEM_RUN_FLAG_PATH:-/workspace/identification/.system_run}"
     depends_on:
       gateway-service:
         condition: service_started

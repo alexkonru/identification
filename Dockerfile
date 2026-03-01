@@ -24,6 +24,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     protobuf-compiler \
     clang \
     cmake \
+    ffmpeg \
+    alsa-utils \
+    v4l-utils \
     libopenblas-dev \
     libcudnn9-dev-cuda-12 \
     && rm -rf /var/lib/apt/lists/*
