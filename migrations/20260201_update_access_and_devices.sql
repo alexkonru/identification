@@ -1,11 +1,11 @@
--- Enforce single embedding per user
+-- Гарантируем один вектор на пользователя.
 ALTER TABLE face_embeddings
     ADD PRIMARY KEY (user_id);
 
 ALTER TABLE voice_embeddings
     ADD PRIMARY KEY (user_id);
 
--- Expand access rules to support zone-level and room-level access
+-- Разделяем правила доступа на уровень зон и комнат.
 CREATE TABLE IF NOT EXISTS access_rules_zones (
     user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     zone_id INT NOT NULL REFERENCES zones(id) ON DELETE CASCADE,
@@ -27,7 +27,7 @@ ON CONFLICT DO NOTHING;
 
 DROP TABLE IF EXISTS access_rules;
 
--- Normalize device types
+-- Нормализуем типы устройств в отдельный справочник.
 CREATE TABLE IF NOT EXISTS device_types (
     id SERIAL PRIMARY KEY,
     name TEXT NOT NULL UNIQUE

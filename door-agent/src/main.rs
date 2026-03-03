@@ -130,19 +130,37 @@ fn camera_input_from_conn(conn: &str) -> String {
     conn.to_string()
 }
 
+fn camera_lock_path(conn: &str) -> String {
+    let normalized = camera_input_from_conn(conn);
+    let sanitized: String = normalized
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect();
+    let compact = sanitized.trim_matches('_');
+    let id = if compact.is_empty() { "camera" } else { compact };
+    let lock_dir =
+        std::env::var("CAMERA_LOCK_DIR").unwrap_or_else(|_| "/workspace/identification/locks".to_string());
+    format!("{}/biometry_cam_{}.lock", lock_dir.trim_end_matches('/'), id)
+}
+
 async fn capture_single_jpeg(conn: &str) -> Option<Vec<u8>> {
     let input = camera_input_from_conn(conn);
-    let source_arg = if input.starts_with("/dev/video") {
-        format!("-f v4l2 -i '{}'", input.replace('\'', ""))
+    let cmd = if input.starts_with("/dev/video") {
+        let lock_path = camera_lock_path(conn);
+        format!(
+            "flock -w 2 '{}' ffmpeg -loglevel error -y -f v4l2 -i '{}' -frames:v 1 -f image2pipe -vcodec mjpeg -",
+            lock_path,
+            input.replace('\'', "")
+        )
     } else {
-        format!("-i '{}'", input.replace('\'', ""))
+        format!(
+            "ffmpeg -loglevel error -y -i '{}' -frames:v 1 -f image2pipe -vcodec mjpeg -",
+            input.replace('\'', "")
+        )
     };
     let output = Command::new("bash")
         .arg("-lc")
-        .arg(format!(
-            "ffmpeg -loglevel error -y {} -frames:v 1 -f image2pipe -vcodec mjpeg -",
-            source_arg
-        ))
+        .arg(cmd)
         .output()
         .await
         .ok()?;
@@ -217,7 +235,7 @@ async fn run_background_live_loop(gateway_addr: String) {
         tracing::info!("door-agent background loop disabled by DOOR_BACKGROUND_ENABLED=0");
         return;
     }
-    let frames_per_check = env_parse::<usize>("DOOR_BG_FRAMES", 3).max(1);
+    let frames_per_check = env_parse::<usize>("DOOR_BG_FRAMES", 8).max(1);
     let tick_ms = env_parse::<u64>("DOOR_BG_TICK_MS", 500).max(100);
     let cooldown_ms = env_parse::<i64>("DOOR_BG_COOLDOWN_MS", 2500).max(500);
     let use_microphone = env_flag("DOOR_BG_USE_MIC", true);
@@ -353,7 +371,7 @@ impl DoorAgent for DoorAgentService {
             )));
         }
 
-        // presence by frame (face-first policy) - if no frame, reset after timeout
+        // Контроль присутствия по кадру (с приоритетом лица): если кадра долго нет, состояние сбрасывается по таймауту.
         if req.frame.is_empty() {
             if now - st.last_seen_ms > self.presence_timeout_ms {
                 *st = DeviceState::default();
@@ -478,7 +496,7 @@ async fn main() -> anyhow::Result<()> {
         std::env::var("DOOR_AGENT_ADDR").unwrap_or_else(|_| "0.0.0.0:50054".to_string());
     let gateway_addr =
         std::env::var("GATEWAY_ADDR").unwrap_or_else(|_| "http://127.0.0.1:50051".to_string());
-    let max_clip_frames = env_parse::<usize>("DOOR_MAX_CLIP_FRAMES", 3).max(1);
+    let max_clip_frames = env_parse::<usize>("DOOR_MAX_CLIP_FRAMES", 8).max(1);
     let presence_timeout_ms = env_parse::<i64>("DOOR_PRESENCE_TIMEOUT_MS", 1500).max(200);
     let cooldown_ms = env_parse::<i64>("DOOR_COOLDOWN_MS", 2000).max(200);
 

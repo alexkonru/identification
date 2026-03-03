@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex};
 use tonic::{Request, Response, Status, transport::Server};
 use tracing::{error, info};
 
-const TARGET_AUDIO_SAMPLE_LENGTH: usize = 64000; // 4 seconds of 16kHz audio
+const TARGET_AUDIO_SAMPLE_LENGTH: usize = 64000; // 4 секунды аудио при 16 кГц.
 
 fn env_bool(name: &str, default: bool) -> bool {
     std::env::var(name)
@@ -59,10 +59,10 @@ fn build_cuda_audio_builder() -> Result<ort::session::builder::SessionBuilder> {
         .context("Failed to create AUDIO CUDA session builder")
 }
 
-// --- Helper Functions ---
+// --- Вспомогательные функции ---
 
 fn bytes_to_f32(bytes: &[u8]) -> Vec<f32> {
-    // Assume 16-bit Little Endian PCM
+    // Ожидаем 16-bit Little Endian PCM.
     let mut samples = Vec::with_capacity(bytes.len() / 2);
     for chunk in bytes.chunks_exact(2) {
         let sample = LittleEndian::read_i16(chunk);
@@ -76,10 +76,10 @@ fn resample(input: &[f32], from_rate: u32, to_rate: u32) -> Result<Vec<f32>> {
         return Ok(input.to_vec());
     }
 
-    // Calculate resampling ratio
+    // Коэффициент ресемплинга.
     let ratio = to_rate as f64 / from_rate as f64;
 
-    // Chunk size for processing (must be large enough for the resampler window)
+    // Размер чанка обработки (должен быть достаточно большим для окна ресемплера).
     let chunk_size = 1024;
 
     let params = SincInterpolationParameters {
@@ -96,9 +96,9 @@ fn resample(input: &[f32], from_rate: u32, to_rate: u32) -> Result<Vec<f32>> {
     )?;
 
     let mut output_buffer = Vec::new();
-    let mut input_buffer = vec![vec![0.0; chunk_size]; 1]; // 1 channel
+    let mut input_buffer = vec![vec![0.0; chunk_size]; 1]; // 1 канал.
 
-    // Pad input to multiple of chunk_size
+    // Дополняем вход до кратности chunk_size.
     let mut padded_input = input.to_vec();
     let remainder = padded_input.len() % chunk_size;
     if remainder != 0 {
@@ -111,9 +111,7 @@ fn resample(input: &[f32], from_rate: u32, to_rate: u32) -> Result<Vec<f32>> {
         output_buffer.extend_from_slice(&output_frames[0]);
     }
 
-    // Trim potentially excess samples if we padded?
-    // Usually simple approximation is fine for bio-metrics, but ideally we calculate exact length.
-    // length = input_len * ratio.
+    // Обрезаем лишние сэмплы после дополнения.
     let expected_len = (input.len() as f64 * ratio) as usize;
     if output_buffer.len() > expected_len {
         output_buffer.truncate(expected_len);
@@ -122,7 +120,7 @@ fn resample(input: &[f32], from_rate: u32, to_rate: u32) -> Result<Vec<f32>> {
     Ok(output_buffer)
 }
 
-// --- ModelStore ---
+// --- Хранилище моделей ---
 
 struct ModelStore {
     aasist: Mutex<Session>,
@@ -213,7 +211,7 @@ impl ModelStore {
     }
 }
 
-// --- Service Implementation ---
+// --- Реализация сервиса ---
 
 use tokio::sync::mpsc;
 
@@ -241,7 +239,7 @@ impl Audio for AudioService {
     ) -> Result<Response<BioResult>, Status> {
         let chunk = request.into_inner();
 
-        // Step 1: Preprocessing
+        // Шаг 1: предобработка.
         if chunk.content.is_empty() {
             return Err(Status::invalid_argument("Empty audio content"));
         }
@@ -251,7 +249,7 @@ impl Audio for AudioService {
         let processed_samples = resample(&samples, chunk.sample_rate, 16000)
             .map_err(|e| Status::internal(format!("Resampling error: {}", e)))?;
 
-        // Ensure processed_samples has the TARGET_AUDIO_SAMPLE_LENGTH
+        // Приводим длину к TARGET_AUDIO_SAMPLE_LENGTH.
         let mut model_input_samples = processed_samples;
         if model_input_samples.len() < TARGET_AUDIO_SAMPLE_LENGTH {
             model_input_samples.extend(
@@ -261,17 +259,16 @@ impl Audio for AudioService {
             model_input_samples.truncate(TARGET_AUDIO_SAMPLE_LENGTH);
         }
 
-        // Keep a copy for speech-energy pre-check
+        // Копия для предварительной проверки речевой энергии.
         let vad_input_tensor_values = model_input_samples.clone();
 
-        // Prepare tensor for AASIST and ECAPA (fixed length)
+        // Готовим тензор для AASIST и ECAPA (фиксированная длина).
         let fixed_input_shape = vec![1, TARGET_AUDIO_SAMPLE_LENGTH as i64];
         let fixed_input_tensor_values = model_input_samples;
 
-        // --- Step 2: Speech presence check ---
-        // NOTE: current silero_vad export has dynamic-state/runtime issues in this environment
-        // (shape/rank mismatches in recurrent path). To keep pipeline stable we apply
-        // lightweight RMS-energy gating before spoof/embedding stages.
+        // --- Шаг 2: проверка наличия речи ---
+        // Текущий экспорт silero_vad в этом окружении нестабилен (shape/rank в recurrent path),
+        // поэтому используем легкий RMS-gate до этапов anti-spoofing и эмбеддинга.
         {
             let rms = (vad_input_tensor_values.iter().map(|v| v * v).sum::<f32>()
                 / vad_input_tensor_values.len().max(1) as f32)
@@ -288,17 +285,12 @@ impl Audio for AudioService {
             }
         }
 
-        // --- Step 3: Anti-Spoofing (AASIST) ---
+        // --- Шаг 3: антиспуфинг (AASIST) ---
         let is_live;
         let liveness_score;
         {
             let mut session = self.models.aasist.lock().unwrap();
-            // AASIST usually expects fixed length input (e.g. 64600 samples ~ 4s) repeated or cut.
-            // For simplicity, we pass what we have, assuming model handles variable length or we should fix it.
-            // If model fails on variable length, we might need to pad/cut.
-            // Most ONNX exports of AASIST are fixed size.
-            // Let's try passing as is. If it crashes, user needs to handle input size.
-            // AASIST repo: "Input: raw waveform (tensor)".
+            // AASIST обычно ожидает фиксированную длину входа; здесь подаем фиксированный тензор.
 
             let input_value =
                 Tensor::from_array((fixed_input_shape.clone(), fixed_input_tensor_values.clone()))
@@ -308,26 +300,25 @@ impl Audio for AudioService {
                 .run(inputs![input_value])
                 .map_err(|e| Status::internal(format!("AASIST Inference error: {}", e)))?;
 
-            // Output: [1, 2] usually. Index 1 = Bonafide (Live).
+            // Выход обычно [1, 2], индекс 1 соответствует bonafide (live).
             let (_, output_slice) = outputs[0]
                 .try_extract_tensor::<f32>()
                 .map_err(|_| Status::internal("AASIST output extract error"))?;
 
             if output_slice.len() >= 2 {
-                // Apply softmax roughly or just check raw scores
-                // Softmax: exp(x) / sum(exp)
+                // Применяем softmax.
                 let s0 = output_slice[0].exp();
                 let s1 = output_slice[1].exp();
                 liveness_score = s1 / (s0 + s1);
                 is_live = liveness_score > 0.5;
             } else {
-                // Fallback
+                // Резервный вариант для нетипичной формы выхода.
                 liveness_score = output_slice.get(0).cloned().unwrap_or(0.0);
                 is_live = liveness_score > 0.5;
             }
         }
 
-        // --- Step 4: Recognition (ECAPA-TDNN) ---
+        // --- Шаг 4: распознавание (ECAPA-TDNN) ---
         let embedding_vec;
         {
             let mut session = self.models.ecapa.lock().unwrap();
@@ -338,7 +329,7 @@ impl Audio for AudioService {
                 .run(inputs![input_value])
                 .map_err(|e| Status::internal(format!("ECAPA Inference error: {}", e)))?;
 
-            // Output: [1, 192] embedding.
+            // Выход: эмбеддинг [1, 192].
             let (_, output_slice) = outputs[0]
                 .try_extract_tensor::<f32>()
                 .map_err(|_| Status::internal("ECAPA output extract error"))?;
@@ -365,14 +356,14 @@ impl Audio for AudioService {
     }
 }
 
-// --- Main ---
+// --- Точка входа ---
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
 
     let possible_paths = ["audio-worker/models", "models"];
-    let mut models_dir = "models"; // fallback
+    let mut models_dir = "models"; // Резервный путь.
     for path in &possible_paths {
         if Path::new(path).exists() && Path::new(path).join("aasist.onnx").exists() {
             models_dir = path;
@@ -380,8 +371,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // We create the directory if it doesn't exist to allow start (logic requirement)
-    // Though in prod it should be populated.
+    // Создаем каталог, если его нет, чтобы сервис мог стартовать.
     if !std::fs::metadata(models_dir).is_ok() {
         std::fs::create_dir_all(models_dir)?;
     }
@@ -398,7 +388,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    let addr = "0.0.0.0:50053".parse()?; // Different port than vision (50052)
+    let addr = "0.0.0.0:50053".parse()?; // Порт отличается от vision (50052).
     info!(
         "Audio Worker listening on {} (Provider: {})",
         addr, models.provider

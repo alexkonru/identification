@@ -1,31 +1,34 @@
 use glob::glob;
+use image::{imageops::FilterType, GrayImage};
 use pgvector::Vector;
 use shared::biometry::gatekeeper_server::{Gatekeeper, GatekeeperServer};
 use shared::biometry::{
     AccessCheckResponse, AccessCheckResponseV2, AddDeviceRequest, AddRoomRequest, AddZoneRequest,
     CheckAccessRequest, CheckAccessRequestV2, ControlDoorRequest, ControlServiceRequest, Device,
-    Empty, GetLogsRequest, GetLogsResponse, GetUserAccessResponse, GrantAccessRequest, IdRequest,
-    IdResponse, ImageFrame, ListDevicesRequest, ListDevicesResponse, ListRoomsRequest,
-    ListRoomsResponse, ListUsersRequest, ListUsersResponse, ListZonesRequest, ListZonesResponse,
-    LogEntry, RegisterUserRequest, Room, RuntimeModeRequest, RuntimeModeResponse,
-    ScanHardwareResponse, ServiceStatus, SetAccessRulesRequest, StatusResponse,
-    SystemStatusResponse, User, Zone, audio_client::AudioClient, vision_client::VisionClient,
+    DeviceMediaChunk, DeviceMediaRequest, Empty, GetLogsRequest, GetLogsResponse,
+    GetUserAccessResponse, GrantAccessRequest, IdRequest, IdResponse, ImageFrame,
+    ListDevicesRequest, ListDevicesResponse, ListRoomsRequest, ListRoomsResponse,
+    ListUsersRequest, ListUsersResponse, ListZonesRequest, ListZonesResponse, LogEntry,
+    RegisterUserRequest, Room, RuntimeModeRequest, RuntimeModeResponse, ScanHardwareResponse,
+    ServiceStatus, SetAccessRulesRequest, StatusResponse, SystemStatusResponse, User, Zone,
+    audio_client::AudioClient, vision_client::VisionClient,
 };
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{Pool, Postgres, Row};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::fs::OpenOptions;
+use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 use tokio::sync::mpsc;
 use tokio::time::{Duration, sleep, timeout};
-use tokio::io::AsyncWriteExt;
+use tokio_stream::wrappers::ReceiverStream;
 use tonic::{
     Request, Response, Status,
     transport::{Channel, Server},
 };
 
-// Struct to hold full processing details
+// Детали распознавания лица и проверки живости.
 struct FaceProcessResult {
     embedding: Vec<f32>,
     liveness_score: f32,
@@ -46,6 +49,15 @@ struct ClipSelectionSummary {
     median_liveness: f32,
     live_ratio: f32,
     detected_ratio: f32,
+}
+
+struct ClipMotionAnalysis {
+    global_motion: f32,
+    spatial_std: f32,
+    active_cell_ratio: f32,
+    eye_motion: f32,
+    mouth_motion: f32,
+    motion_jitter: f32,
 }
 
 struct HardwareProfile {
@@ -99,6 +111,20 @@ fn env_parse_f32_clamped(name: &str, default: f32, min: f32, max: f32) -> f32 {
 }
 
 impl GatewayService {
+    fn physical_cores_from_lscpu() -> Option<usize> {
+        use std::process::Command as StdCommand;
+        let out = StdCommand::new("bash")
+            .arg("-lc")
+            .arg("lscpu | awk -F: '/^Core\\(s\\) per socket:/{gsub(/ /,\"\",$2); c=$2} /^Socket\\(s\\):/{gsub(/ /,\"\",$2); s=$2} END{if(c ~ /^[0-9]+$/ && s ~ /^[0-9]+$/) print c*s}'")
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        let text = String::from_utf8_lossy(&out.stdout);
+        text.trim().parse::<usize>().ok().filter(|v| *v > 0)
+    }
+
     fn pipeline_run_flag_path() -> String {
         std::env::var("SYSTEM_RUN_FLAG_PATH")
             .unwrap_or_else(|_| "/workspace/identification/.system_run".to_string())
@@ -255,7 +281,6 @@ impl GatewayService {
         }
     }
 
-    // Updated to return full details
     async fn process_face_full(&self, image: &[u8]) -> Result<Option<FaceProcessResult>, Status> {
         let mut client = VisionClient::new(self.vision_channel.clone());
         let request = Request::new(ImageFrame {
@@ -264,7 +289,7 @@ impl GatewayService {
 
         match timeout(self.vision_rpc_timeout, client.process_face(request)).await {
             Err(_) => {
-                // one lightweight retry to avoid startup race false negatives
+                // Легкий повтор, чтобы уменьшить ложные сбои на старте сервисов.
                 let mut retry_client = VisionClient::new(self.vision_channel.clone());
                 let retry_request = Request::new(ImageFrame {
                     content: image.to_vec(),
@@ -355,6 +380,16 @@ impl GatewayService {
         .map_err(|e| tracing::error!("Failed to write access log: {}", e));
     }
 
+    async fn log_v2_precheck_denied(&self, device_id: i32, reason: &str, _flags: &[String]) {
+        self.log_access(
+            None,
+            device_id,
+            false,
+            &format!("ОТКАЗ [Предпроверка V2] {}", reason),
+        )
+        .await;
+    }
+
     fn door_controller_audit_path() -> String {
         std::env::var("DOOR_CONTROLLER_LOG_PATH")
             .unwrap_or_else(|_| "/tmp/door_controller.log".to_string())
@@ -436,14 +471,147 @@ impl GatewayService {
             room_id: 0,
             name: "Default Camera".to_string(),
             device_type: "camera".to_string(),
-            connection_string: "0".to_string(), // Webcam 0
+            connection_string: "0".to_string(), // Камера по умолчанию: /dev/video0
             is_active: true,
         }
     }
 
+    fn camera_input_from_conn(conn: &str) -> String {
+        if conn.starts_with("/dev/video")
+            || conn.starts_with("rtsp://")
+            || conn.starts_with("http://")
+            || conn.starts_with("https://")
+        {
+            return conn.to_string();
+        }
+        if conn.chars().all(|c| c.is_ascii_digit()) {
+            return format!("/dev/video{}", conn);
+        }
+        conn.to_string()
+    }
+
+    fn camera_lock_path(conn: &str) -> String {
+        let normalized = Self::camera_input_from_conn(conn);
+        let sanitized: String = normalized
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+            .collect();
+        let compact = sanitized.trim_matches('_');
+        let id = if compact.is_empty() { "camera" } else { compact };
+        let lock_dir = std::env::var("CAMERA_LOCK_DIR")
+            .unwrap_or_else(|_| "/workspace/identification/locks".to_string());
+        format!("{}/biometry_cam_{}.lock", lock_dir.trim_end_matches('/'), id)
+    }
+
+    async fn capture_single_jpeg(conn: &str) -> Result<Vec<u8>, String> {
+        let input = Self::camera_input_from_conn(conn);
+        let cmd = if input.starts_with("/dev/video") {
+            let lock_path = Self::camera_lock_path(conn);
+            format!(
+                "flock -w 2 '{}' ffmpeg -loglevel error -y -f v4l2 -i '{}' -frames:v 1 -f image2pipe -vcodec mjpeg -",
+                lock_path,
+                input.replace('\'', "")
+            )
+        } else {
+            format!(
+                "ffmpeg -loglevel error -y -i '{}' -frames:v 1 -f image2pipe -vcodec mjpeg -",
+                input.replace('\'', "")
+            )
+        };
+        let output = Command::new("bash")
+            .arg("-lc")
+            .arg(cmd)
+            .output()
+            .await
+            .map_err(|e| format!("ffmpeg execution failed: {}", e))?;
+        if !output.status.success() || output.stdout.is_empty() {
+            let err = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            return Err(if err.is_empty() {
+                "ffmpeg returned empty frame".to_string()
+            } else {
+                err
+            });
+        }
+        Ok(output.stdout)
+    }
+
+    async fn capture_mic_raw(conn: &str, duration_s: f32, sample_rate: u32) -> Result<Vec<u8>, String> {
+        let seconds = duration_s.clamp(0.15, 1.2);
+        let sr = sample_rate.clamp(8000, 48000);
+        let byte_count = ((sr as f32 * seconds * 2.0) as usize).max((sr as usize / 8) * 2);
+        let output = Command::new("bash")
+            .arg("-lc")
+            .arg(format!(
+                "arecord -q -D '{}' -r {} -c 1 -f S16_LE -t raw - | head -c {}",
+                conn.replace('\'', ""),
+                sr,
+                byte_count
+            ))
+            .output()
+            .await
+            .map_err(|e| format!("arecord execution failed: {}", e))?;
+        if !output.status.success() || output.stdout.is_empty() {
+            let err = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            return Err(if err.is_empty() {
+                "arecord returned empty chunk".to_string()
+            } else {
+                err
+            });
+        }
+        Ok(output.stdout)
+    }
+
+    async fn resolve_stream_point(
+        &self,
+        device_id: i32,
+    ) -> Result<(String, Option<String>), Status> {
+        let cam_row = sqlx::query(
+            r#"
+            SELECT d.room_id, d.connection_string, dt.name AS device_type
+            FROM devices d
+            JOIN device_types dt ON dt.id = d.device_type_id
+            WHERE d.id = $1
+            LIMIT 1
+            "#,
+        )
+        .bind(device_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| Status::internal(format!("stream lookup failed: {}", e)))?;
+        let Some(row) = cam_row else {
+            return Err(Status::not_found(format!("device {} not found", device_id)));
+        };
+        let device_type: String = row.get("device_type");
+        if device_type != "camera" {
+            return Err(Status::failed_precondition(format!(
+                "device {} is not camera (type={})",
+                device_id, device_type
+            )));
+        }
+        let room_id: i32 = row.get("room_id");
+        let camera_conn: String = row.get("connection_string");
+
+        let mic_row = sqlx::query(
+            r#"
+            SELECT d.connection_string
+            FROM devices d
+            JOIN device_types dt ON dt.id = d.device_type_id
+            WHERE d.room_id = $1 AND dt.name = 'microphone'
+            ORDER BY d.id ASC
+            LIMIT 1
+            "#,
+        )
+        .bind(room_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| Status::internal(format!("stream microphone lookup failed: {}", e)))?;
+        let mic_conn = mic_row.map(|r| r.get("connection_string"));
+        Ok((camera_conn, mic_conn))
+    }
+
     fn map_stage_to_v2(stage: &str, granted: bool) -> i32 {
         if granted {
-            return 7; // ACCESS_STAGE_GRANTED
+            return 7;
         }
         match stage {
             "presence" | "face_detection" => 1,
@@ -455,32 +623,166 @@ impl GatewayService {
         }
     }
 
-    fn clip_motion_score(frames: &[Vec<u8>]) -> f32 {
-        if frames.len() < 2 {
-            return 1.0;
+    fn decode_clip_gray(frame: &[u8]) -> Option<GrayImage> {
+        let img = image::load_from_memory(frame).ok()?.to_luma8();
+        let (w, h) = img.dimensions();
+        if w < 24 || h < 24 {
+            return None;
         }
-        let mut total = 0.0f32;
-        let mut count = 0usize;
-        for pair in frames.windows(2) {
+        let target_w = 160u32.min(w.max(64));
+        let target_h = (((target_w as f32) * (h as f32 / w as f32)).round() as u32)
+            .clamp(48, 180);
+        Some(image::imageops::resize(
+            &img,
+            target_w,
+            target_h,
+            FilterType::Triangle,
+        ))
+    }
+
+    fn region_mean_diff(
+        a: &GrayImage,
+        b: &GrayImage,
+        x0f: f32,
+        x1f: f32,
+        y0f: f32,
+        y1f: f32,
+    ) -> f32 {
+        let (w, h) = a.dimensions();
+        if w == 0 || h == 0 || a.dimensions() != b.dimensions() {
+            return 0.0;
+        }
+        let x0 = ((w as f32) * x0f).floor().max(0.0) as u32;
+        let x1 = ((w as f32) * x1f).ceil().min(w as f32) as u32;
+        let y0 = ((h as f32) * y0f).floor().max(0.0) as u32;
+        let y1 = ((h as f32) * y1f).ceil().min(h as f32) as u32;
+        if x1 <= x0 || y1 <= y0 {
+            return 0.0;
+        }
+        let mut sum = 0.0f32;
+        let mut cnt = 0usize;
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let da = a.get_pixel(x, y).0[0] as f32 / 255.0;
+                let db = b.get_pixel(x, y).0[0] as f32 / 255.0;
+                sum += (da - db).abs();
+                cnt += 1;
+            }
+        }
+        if cnt == 0 { 0.0 } else { sum / cnt as f32 }
+    }
+
+    fn clip_motion_analysis(frames: &[Vec<u8>]) -> Option<ClipMotionAnalysis> {
+        if frames.len() < 2 {
+            return None;
+        }
+        let decoded: Vec<_> = frames
+            .iter()
+            .filter_map(|f| Self::decode_clip_gray(f))
+            .collect();
+        if decoded.len() < 2 {
+            return None;
+        }
+
+        let mut pair_globals = Vec::new();
+        let mut pair_spatial_std = Vec::new();
+        let mut pair_active_ratio = Vec::new();
+        let mut pair_eye_motion = Vec::new();
+        let mut pair_mouth_motion = Vec::new();
+
+        for pair in decoded.windows(2) {
             let a = &pair[0];
             let b = &pair[1];
-            let min_len = a.len().min(b.len());
-            if min_len == 0 {
+            if a.dimensions() != b.dimensions() {
                 continue;
             }
-            let mut diff_sum: u64 = 0;
-            for i in 0..min_len {
-                diff_sum += (a[i] as i32 - b[i] as i32).unsigned_abs() as u64;
+            let (w, h) = a.dimensions();
+            let gw = 6u32;
+            let gh = 6u32;
+            let cw = (w / gw).max(1);
+            let ch = (h / gh).max(1);
+            let mut cell_means = Vec::with_capacity((gw * gh) as usize);
+
+            for gy in 0..gh {
+                for gx in 0..gw {
+                    let x0 = gx * cw;
+                    let y0 = gy * ch;
+                    let x1 = if gx + 1 >= gw { w } else { ((gx + 1) * cw).min(w) };
+                    let y1 = if gy + 1 >= gh { h } else { ((gy + 1) * ch).min(h) };
+                    if x1 <= x0 || y1 <= y0 {
+                        continue;
+                    }
+                    let mut sum = 0.0f32;
+                    let mut cnt = 0usize;
+                    for y in y0..y1 {
+                        for x in x0..x1 {
+                            let da = a.get_pixel(x, y).0[0] as f32 / 255.0;
+                            let db = b.get_pixel(x, y).0[0] as f32 / 255.0;
+                            sum += (da - db).abs();
+                            cnt += 1;
+                        }
+                    }
+                    if cnt > 0 {
+                        cell_means.push(sum / cnt as f32);
+                    }
+                }
             }
-            let norm = diff_sum as f32 / (min_len as f32 * 255.0);
-            total += norm;
-            count += 1;
+            if cell_means.is_empty() {
+                continue;
+            }
+            let global = cell_means.iter().sum::<f32>() / cell_means.len() as f32;
+            let var = cell_means
+                .iter()
+                .map(|v| {
+                    let d = *v - global;
+                    d * d
+                })
+                .sum::<f32>()
+                / cell_means.len() as f32;
+            let spatial_std = var.sqrt();
+            let active_ratio = cell_means
+                .iter()
+                .filter(|v| **v > (global * 1.2).max(0.006))
+                .count() as f32
+                / cell_means.len() as f32;
+
+            let eye_motion = Self::region_mean_diff(a, b, 0.20, 0.80, 0.18, 0.46);
+            let mouth_motion = Self::region_mean_diff(a, b, 0.24, 0.76, 0.54, 0.84);
+
+            pair_globals.push(global);
+            pair_spatial_std.push(spatial_std);
+            pair_active_ratio.push(active_ratio);
+            pair_eye_motion.push(eye_motion);
+            pair_mouth_motion.push(mouth_motion);
         }
-        if count == 0 {
-            0.0
-        } else {
-            total / count as f32
+
+        if pair_globals.is_empty() {
+            return None;
         }
+        let mean_global = pair_globals.iter().sum::<f32>() / pair_globals.len() as f32;
+        let mean_spatial = pair_spatial_std.iter().sum::<f32>() / pair_spatial_std.len() as f32;
+        let mean_active = pair_active_ratio.iter().sum::<f32>() / pair_active_ratio.len() as f32;
+        let mean_eye = pair_eye_motion.iter().sum::<f32>() / pair_eye_motion.len() as f32;
+        let mean_mouth = pair_mouth_motion.iter().sum::<f32>() / pair_mouth_motion.len() as f32;
+
+        let jitter_var = pair_globals
+            .iter()
+            .map(|v| {
+                let d = *v - mean_global;
+                d * d
+            })
+            .sum::<f32>()
+            / pair_globals.len() as f32;
+        let motion_jitter = jitter_var.sqrt();
+
+        Some(ClipMotionAnalysis {
+            global_motion: mean_global,
+            spatial_std: mean_spatial,
+            active_cell_ratio: mean_active,
+            eye_motion: mean_eye,
+            mouth_motion: mean_mouth,
+            motion_jitter,
+        })
     }
 
     async fn pick_best_clip_frame(&self, frames: &[Vec<u8>]) -> ClipSelectionSummary {
@@ -559,7 +861,10 @@ impl GatewayService {
         let cpu_threads = std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(1);
-        let cpu_cores = (cpu_threads / 2).max(1);
+        let cpu_cores = Self::physical_cores_from_lscpu()
+            .unwrap_or_else(|| (cpu_threads / 2).max(1))
+            .min(cpu_threads)
+            .max(1);
         let gpu_available = PathBuf::from("/dev/nvidia0").exists();
         HardwareProfile {
             cpu_cores,
@@ -572,13 +877,47 @@ impl GatewayService {
         env_parse::<usize>(var, default_value).max(1)
     }
 
+    fn compute_worker_threads(cpu_cores: usize) -> (usize, usize) {
+        // Сначала резерв под gateway/db/door-agent, остальное делим между worker'ами.
+        let reserve_system = if cpu_cores <= 4 { 1 } else { 2 };
+        let mut worker_budget = cpu_cores.saturating_sub(reserve_system);
+        if worker_budget < 2 {
+            worker_budget = 2;
+        }
+        // Vision обычно тяжелее: распределение примерно 65/35.
+        let mut vision = ((worker_budget * 2) + 1) / 3;
+        if vision < 1 {
+            vision = 1;
+        }
+        let mut audio = worker_budget.saturating_sub(vision);
+        if audio < 1 {
+            audio = 1;
+        }
+        (vision, audio)
+    }
+
     fn build_runtime_plan(mode: &str, hw: &HardwareProfile) -> RuntimePlan {
         let auto_gpu = mode == "auto" && hw.gpu_available;
-
-        let default_vision = ((hw.cpu_cores + 1) / 2).max(1);
-        let default_audio = (hw.cpu_cores.saturating_sub(default_vision)).max(1);
-        let vision_threads = Self::env_threads_or_default("VISION_INTRA_THREADS", default_vision);
-        let audio_threads = Self::env_threads_or_default("AUDIO_INTRA_THREADS", default_audio);
+        let (default_vision, default_audio) = Self::compute_worker_threads(hw.cpu_cores);
+        let worker_budget = (default_vision + default_audio).max(2);
+        let mut vision_threads =
+            Self::env_threads_or_default("VISION_INTRA_THREADS", default_vision).max(1);
+        let mut audio_threads =
+            Self::env_threads_or_default("AUDIO_INTRA_THREADS", default_audio).max(1);
+        if vision_threads + audio_threads > worker_budget {
+            let overflow = vision_threads + audio_threads - worker_budget;
+            if vision_threads >= audio_threads {
+                vision_threads = vision_threads.saturating_sub(overflow).max(1);
+            } else {
+                audio_threads = audio_threads.saturating_sub(overflow).max(1);
+            }
+        }
+        if vision_threads + audio_threads > worker_budget {
+            audio_threads = worker_budget.saturating_sub(vision_threads).max(1);
+        }
+        if vision_threads + audio_threads > worker_budget {
+            vision_threads = worker_budget.saturating_sub(audio_threads).max(1);
+        }
 
         if (mode == "gpu" || auto_gpu) && hw.gpu_available {
             RuntimePlan {
@@ -652,6 +991,8 @@ impl GatewayService {
 
 #[tonic::async_trait]
 impl Gatekeeper for GatewayService {
+    type StreamDeviceMediaStream = ReceiverStream<Result<DeviceMediaChunk, Status>>;
+
     // --- Пользователи ---
     async fn register_user(
         &self,
@@ -666,7 +1007,7 @@ impl Gatekeeper for GatewayService {
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
 
-        // 1. Create User
+        // 1) Создаем пользователя.
         let row = sqlx::query("INSERT INTO users (name) VALUES ($1) RETURNING id")
             .bind(&req.name)
             .fetch_one(&mut *tx)
@@ -677,7 +1018,7 @@ impl Gatekeeper for GatewayService {
             .try_get("id")
             .map_err(|e| Status::internal(e.to_string()))?;
 
-        // 2. Process Images (require at least one valid face embedding)
+        // 2) Обрабатываем фото (нужен минимум один валидный вектор лица).
         let mut face_samples: Vec<Vec<f32>> = Vec::new();
         for image_bytes in req.images {
             if let Ok(Some(embedding)) = self.process_face_full(&image_bytes).await {
@@ -699,7 +1040,7 @@ impl Gatekeeper for GatewayService {
         .await
         .map_err(|e| Status::internal(e.to_string()))?;
 
-        // 3. Process Voices (optional, store averaged embedding when present)
+        // 3) Обрабатываем голос (опционально, сохраняем усредненный вектор).
         let mut voice_samples: Vec<Vec<f32>> = Vec::new();
         for voice_bytes in req.voices {
             if let Ok(Some(embedding)) = self.process_voice_embedding(&voice_bytes).await {
@@ -738,7 +1079,7 @@ impl Gatekeeper for GatewayService {
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
 
-        // Process Images (if provided, require at least one valid face embedding)
+        // Обрабатываем фото (если переданы, нужен минимум один валидный вектор).
         let mut face_samples: Vec<Vec<f32>> = Vec::new();
         for image_bytes in req.images {
             if let Ok(Some(embedding)) = self.process_face_full(&image_bytes).await {
@@ -762,7 +1103,7 @@ impl Gatekeeper for GatewayService {
             .map_err(|e| Status::internal(e.to_string()))?;
         }
 
-        // Process Voices (optional)
+        // Обрабатываем голос (опционально).
         let mut voice_samples: Vec<Vec<f32>> = Vec::new();
         for voice_bytes in req.voices {
             if let Ok(Some(embedding)) = self.process_voice_embedding(&voice_bytes).await {
@@ -1145,7 +1486,7 @@ impl Gatekeeper for GatewayService {
         }))
     }
 
-    // --- MAIN IDENTIFICATION LOGIC ---
+    // --- Основная логика идентификации ---
     async fn check_access(
         &self,
         request: Request<CheckAccessRequest>,
@@ -1170,17 +1511,17 @@ impl Gatekeeper for GatewayService {
             decision_stage: "start".into(),
         };
 
-        // 1) Face + liveness
+        // 1) Лицо + проверка живости
         let face_res_opt = match self.process_face_full(&req.image).await {
             Ok(v) => v,
             Err(e) => {
-                response.message = format!("Vision backend error: {}", e.message());
+                response.message = format!("Ошибка vision backend: {}", e.message());
                 response.decision_stage = "vision_error".into();
                 self.log_access(
                     None,
                     device_id,
                     false,
-                    &format!("DENIED [VisionError] {}", response.message),
+                    &format!("ОТКАЗ [Ошибка vision] {}", response.message),
                 )
                 .await;
                 return Ok(Response::new(response));
@@ -1189,9 +1530,9 @@ impl Gatekeeper for GatewayService {
         let face_info = match face_res_opt {
             Some(info) => info,
             None => {
-                response.message = "No face detected".into();
+                response.message = "Лицо не обнаружено".into();
                 response.decision_stage = "face_detection".into();
-                self.log_access(None, device_id, false, "DENIED [Face] No face detected")
+                self.log_access(None, device_id, false, "ОТКАЗ [Лицо] Лицо не обнаружено")
                     .await;
                 return Ok(Response::new(response));
             }
@@ -1205,7 +1546,7 @@ impl Gatekeeper for GatewayService {
         if !response.face_live || response.face_liveness_score < min_face_liveness {
             response.user_name = "Unknown".into();
             response.message = format!(
-                "Liveness failed: {:.2}% (< {:.2}) ({})",
+                "Проверка живости не пройдена: {:.2}% (< {:.2}) ({})",
                 response.face_liveness_score * 100.0,
                 min_face_liveness * 100.0,
                 face_info.provider
@@ -1215,13 +1556,13 @@ impl Gatekeeper for GatewayService {
                 None,
                 device_id,
                 false,
-                &format!("DENIED [Spoofing] {}", response.message),
+                &format!("ОТКАЗ [Спуфинг] {}", response.message),
             )
             .await;
             return Ok(Response::new(response));
         }
 
-        // 2) Face identification
+        // 2) Идентификация по лицу
         let user_matches = sqlx::query(
             r#"
             SELECT u.id, u.name, (e.embedding <=> $1) as distance
@@ -1237,9 +1578,14 @@ impl Gatekeeper for GatewayService {
         .map_err(|e| Status::internal(format!("DB Error: {}", e)))?;
         if user_matches.is_empty() {
             response.user_name = "Unknown".into();
-            response.message = "No enrolled face embeddings in database".into();
+            response.message = "В базе нет зарегистрированных векторов лица".into();
             response.decision_stage = "face_match".into();
-            self.log_access(None, device_id, false, "DENIED [Face] No enrolled face embeddings")
+            self.log_access(
+                None,
+                device_id,
+                false,
+                "ОТКАЗ [Лицо] В базе нет зарегистрированных векторов лица",
+            )
                 .await;
             return Ok(Response::new(response));
         }
@@ -1291,7 +1637,7 @@ impl Gatekeeper for GatewayService {
         if !response.face_match {
             response.user_name = "Unknown".into();
             response.message = format!(
-                "Face not matched (distance {:.3}, margin {:.3}, threshold {:.3})",
+                "Лицо не совпало (дистанция {:.3}, отрыв {:.3}, порог {:.3})",
                 face_dist, face_margin, self.face_similarity_threshold
             );
             response.decision_stage = "face_match".into();
@@ -1299,7 +1645,7 @@ impl Gatekeeper for GatewayService {
                 None,
                 device_id,
                 false,
-                &format!("DENIED [Face] {}", response.message),
+                &format!("ОТКАЗ [Лицо] {}", response.message),
             )
             .await;
             return Ok(Response::new(response));
@@ -1356,7 +1702,7 @@ impl Gatekeeper for GatewayService {
         let min_confidence = env_parse_f32_clamped("ACCESS_MIN_CONFIDENCE", 0.60, 0.0, 1.0);
         if response.final_confidence < min_confidence {
             response.message = format!(
-                "Confidence too low ({:.2} < {:.2})",
+                "Итоговая уверенность слишком низкая ({:.2} < {:.2})",
                 response.final_confidence, min_confidence
             );
             response.decision_stage = "confidence_gate".into();
@@ -1364,17 +1710,17 @@ impl Gatekeeper for GatewayService {
                 Some(user_id),
                 device_id,
                 false,
-                &format!("DENIED [Confidence] {}", response.message),
+                &format!("ОТКАЗ [Уверенность] {}", response.message),
             )
             .await;
             return Ok(Response::new(response));
         }
 
-        // 4) Access policy check
+        // 4) Проверка правил доступа
         if device_id == self.test_device_id {
             response.granted = true;
             response.message = format!(
-                "Welcome {} (test device, conf {:.2})",
+                "Доступ разрешен: {} (тестовое устройство, уверенность {:.2})",
                 user_name, response.final_confidence
             );
             response.decision_stage = "granted".into();
@@ -1382,7 +1728,7 @@ impl Gatekeeper for GatewayService {
                 Some(user_id),
                 device_id,
                 true,
-                "GRANTED [Test Device] multimodal",
+                "ДОСТУП РАЗРЕШЕН [Тестовое устройство] мультимодальная проверка",
             )
             .await;
             return Ok(Response::new(response));
@@ -1410,13 +1756,13 @@ impl Gatekeeper for GatewayService {
                 z.get::<String, _>("room_name"),
             ),
             None => {
-                response.message = "Device not found/assigned".into();
+                response.message = "Устройство не найдено или не привязано к комнате".into();
                 response.decision_stage = "device_config".into();
                 self.log_access(
                     Some(user_id),
                     device_id,
                     false,
-                    "DENIED [Config] device not assigned",
+                    "ОТКАЗ [Конфигурация] Устройство не привязано к комнате",
                 )
                 .await;
                 return Ok(Response::new(response));
@@ -1430,7 +1776,7 @@ impl Gatekeeper for GatewayService {
                 Some(user_id),
                 device_id,
                 false,
-                &format!("DENIED [Infra] {}", response.message),
+                &format!("ОТКАЗ [Инфраструктура] {}", response.message),
             )
             .await;
             return Ok(Response::new(response));
@@ -1458,7 +1804,7 @@ impl Gatekeeper for GatewayService {
         if zone_rule_exists.is_some() || room_rule_exists.is_some() {
             response.granted = true;
             response.message = format!(
-                "Welcome {} to {} / {} (conf {:.2})",
+                "Доступ разрешен: {} -> зона \"{}\", комната \"{}\" (уверенность {:.2})",
                 user_name, zone_name, room_name, response.final_confidence
             );
             response.decision_stage = "granted".into();
@@ -1472,7 +1818,7 @@ impl Gatekeeper for GatewayService {
                 device_id,
                 true,
                 &format!(
-                    "GRANTED [Zone: {}, Room: {}] face_dist={:.3} voice_dist={:.3} conf={:.2}",
+                    "ДОСТУП РАЗРЕШЕН | зона: {} | комната: {} | дистанция лица: {:.3} | дистанция голоса: {:.3} | уверенность: {:.2}",
                     zone_name,
                     room_name,
                     response.face_distance,
@@ -1483,13 +1829,19 @@ impl Gatekeeper for GatewayService {
             .await;
         } else {
             response.granted = false;
-            response.message = format!("Access denied to {} / {}", zone_name, room_name);
+            response.message = format!(
+                "Доступ запрещен: нет прав для зоны \"{}\" / комнаты \"{}\"",
+                zone_name, room_name
+            );
             response.decision_stage = "access_rules".into();
             self.log_access(
                 Some(user_id),
                 device_id,
                 false,
-                &format!("DENIED [Rules] Zone: {}, Room: {}", zone_name, room_name),
+                &format!(
+                    "ОТКАЗ [Права доступа] зона: {} | комната: {}",
+                    zone_name, room_name
+                ),
             )
             .await;
         }
@@ -1571,6 +1923,8 @@ impl Gatekeeper for GatewayService {
     ) -> Result<Response<AccessCheckResponseV2>, Status> {
         let req = request.into_inner();
         if req.frames.is_empty() {
+            self.log_v2_precheck_denied(req.device_id, "No frames provided", &["no_frames".to_string()])
+                .await;
             return Ok(Response::new(AccessCheckResponseV2 {
                 granted: false,
                 stage: 1,
@@ -1606,17 +1960,144 @@ impl Gatekeeper for GatewayService {
         let mut clip_flags = clip.flags;
         flags.append(&mut clip_flags);
 
-        let motion_score = Self::clip_motion_score(&req.frames);
-        let min_motion = env_parse::<f32>("ACCESS_CLIP_MIN_MOTION", 0.020);
-        if req.frames.len() >= 2 && motion_score < min_motion {
-            flags.push(format!("low_clip_motion:{:.4}", motion_score));
+        let motion = Self::clip_motion_analysis(&req.frames);
+        let min_global_motion = env_parse_f32_clamped("ACCESS_CLIP_MIN_GLOBAL_MOTION", 0.008, 0.0, 1.0);
+        let min_spatial_std = env_parse_f32_clamped("ACCESS_CLIP_MIN_SPATIAL_STD", 0.003, 0.0, 1.0);
+        let min_active_cells = env_parse_f32_clamped("ACCESS_CLIP_MIN_ACTIVE_CELL_RATIO", 0.18, 0.0, 1.0);
+        let min_eye_motion = env_parse_f32_clamped("ACCESS_CLIP_MIN_EYE_MOTION", 0.004, 0.0, 1.0);
+        let min_mouth_motion = env_parse_f32_clamped("ACCESS_CLIP_MIN_MOUTH_MOTION", 0.004, 0.0, 1.0);
+        let min_motion_jitter = env_parse_f32_clamped("ACCESS_CLIP_MIN_JITTER", 0.0012, 0.0, 1.0);
+
+        let Some(motion) = motion else {
+            flags.push("clip_decode_failed".to_string());
+            self.log_v2_precheck_denied(
+                req.device_id,
+                "Unable to decode clip frames for temporal liveness checks",
+                &flags,
+            )
+            .await;
             return Ok(Response::new(AccessCheckResponseV2 {
                 granted: false,
                 stage: 3,
-                reason: format!(
-                    "Clip motion too low ({:.4} < {:.4}), possible photo replay",
-                    motion_score, min_motion
-                ),
+                reason: "Unable to decode clip frames for temporal liveness checks".to_string(),
+                confidence: 0.0,
+                user_id: 0,
+                user_name: "Unknown".to_string(),
+                face_detected: clip.detected_ratio > 0.0,
+                face_quality: clip.detected_ratio,
+                face_live_score: clip.median_liveness,
+                face_live: false,
+                face_distance: 1.0,
+                face_match: false,
+                voice_provided: !req.audio.is_empty(),
+                speech_present: !req.audio.is_empty(),
+                voice_live_score: 0.0,
+                voice_live: false,
+                voice_distance: 1.0,
+                voice_match: false,
+                suspicious_audio: false,
+                flags,
+                session_id: req.session_id,
+            }));
+        };
+
+        flags.push(format!(
+            "clip_motion:global={:.4},spatial={:.4},active={:.2},eye={:.4},mouth={:.4},jitter={:.4}",
+            motion.global_motion,
+            motion.spatial_std,
+            motion.active_cell_ratio,
+            motion.eye_motion,
+            motion.mouth_motion,
+            motion.motion_jitter
+        ));
+
+        if motion.global_motion < min_global_motion {
+            flags.push(format!(
+                "low_global_motion:{:.4}<{:.4}",
+                motion.global_motion, min_global_motion
+            ));
+            let reason = format!(
+                "Temporal liveness failed: global motion too low ({:.4} < {:.4})",
+                motion.global_motion, min_global_motion
+            );
+            self.log_v2_precheck_denied(req.device_id, &reason, &flags).await;
+            return Ok(Response::new(AccessCheckResponseV2 {
+                granted: false,
+                stage: 3,
+                reason,
+                confidence: 0.0,
+                user_id: 0,
+                user_name: "Unknown".to_string(),
+                face_detected: clip.detected_ratio > 0.0,
+                face_quality: clip.detected_ratio,
+                face_live_score: clip.median_liveness,
+                face_live: false,
+                face_distance: 1.0,
+                face_match: false,
+                voice_provided: !req.audio.is_empty(),
+                speech_present: !req.audio.is_empty(),
+                voice_live_score: 0.0,
+                voice_live: false,
+                voice_distance: 1.0,
+                voice_match: false,
+                suspicious_audio: false,
+                flags,
+                session_id: req.session_id,
+            }));
+        }
+
+        if motion.spatial_std < min_spatial_std && motion.active_cell_ratio < min_active_cells {
+            flags.push(format!(
+                "low_nonrigid_motion:spatial={:.4}<{:.4},active={:.2}<{:.2}",
+                motion.spatial_std, min_spatial_std, motion.active_cell_ratio, min_active_cells
+            ));
+            let reason = "Temporal liveness failed: motion pattern too rigid across the face".to_string();
+            self.log_v2_precheck_denied(req.device_id, &reason, &flags).await;
+            return Ok(Response::new(AccessCheckResponseV2 {
+                granted: false,
+                stage: 3,
+                reason,
+                confidence: 0.0,
+                user_id: 0,
+                user_name: "Unknown".to_string(),
+                face_detected: clip.detected_ratio > 0.0,
+                face_quality: clip.detected_ratio,
+                face_live_score: clip.median_liveness,
+                face_live: false,
+                face_distance: 1.0,
+                face_match: false,
+                voice_provided: !req.audio.is_empty(),
+                speech_present: !req.audio.is_empty(),
+                voice_live_score: 0.0,
+                voice_live: false,
+                voice_distance: 1.0,
+                voice_match: false,
+                suspicious_audio: false,
+                flags,
+                session_id: req.session_id,
+            }));
+        }
+
+        if motion.eye_motion < min_eye_motion
+            && motion.mouth_motion < min_mouth_motion
+            && motion.motion_jitter < min_motion_jitter
+        {
+            flags.push(format!(
+                "low_micro_motion:eye={:.4}<{:.4},mouth={:.4}<{:.4},jitter={:.4}<{:.4}",
+                motion.eye_motion,
+                min_eye_motion,
+                motion.mouth_motion,
+                min_mouth_motion,
+                motion.motion_jitter,
+                min_motion_jitter
+            ));
+            let reason =
+                "Temporal liveness failed: not enough micro-movements in eye/mouth regions".to_string();
+            self.log_v2_precheck_denied(req.device_id, &reason, &flags).await;
+            return Ok(Response::new(AccessCheckResponseV2 {
+                granted: false,
+                stage: 3,
+                reason,
                 confidence: 0.0,
                 user_id: 0,
                 user_name: "Unknown".to_string(),
@@ -1653,18 +2134,20 @@ impl Gatekeeper for GatewayService {
                 "clip_liveness_gate:det={:.2},live={:.2},med={:.2}",
                 clip.detected_ratio, clip.live_ratio, clip.median_liveness
             ));
+            let reason = format!(
+                "Clip liveness gate failed (det {:.2}/{:.2}, live {:.2}/{:.2}, median {:.2}/{:.2})",
+                clip.detected_ratio,
+                min_clip_detected_ratio,
+                clip.live_ratio,
+                min_clip_live_ratio,
+                clip.median_liveness,
+                min_clip_liveness
+            );
+            self.log_v2_precheck_denied(req.device_id, &reason, &flags).await;
             return Ok(Response::new(AccessCheckResponseV2 {
                 granted: false,
                 stage: 3,
-                reason: format!(
-                    "Clip liveness gate failed (det {:.2}/{:.2}, live {:.2}/{:.2}, median {:.2}/{:.2})",
-                    clip.detected_ratio,
-                    min_clip_detected_ratio,
-                    clip.live_ratio,
-                    min_clip_live_ratio,
-                    clip.median_liveness,
-                    min_clip_liveness
-                ),
+                reason,
                 confidence: 0.0,
                 user_id: 0,
                 user_name: "Unknown".to_string(),
@@ -1722,11 +2205,119 @@ impl Gatekeeper for GatewayService {
         }))
     }
 
+    async fn stream_device_media(
+        &self,
+        request: Request<DeviceMediaRequest>,
+    ) -> Result<Response<Self::StreamDeviceMediaStream>, Status> {
+        let req = request.into_inner();
+        if req.device_id <= 0 {
+            return Err(Status::invalid_argument("device_id must be > 0"));
+        }
+
+        let (camera_conn, microphone_conn) = self.resolve_stream_point(req.device_id).await?;
+        let target_fps = req.target_fps.clamp(1, 15) as u64;
+        let frame_interval_ms = (1000u64 / target_fps).max(66);
+        let include_audio = req.include_audio;
+        let sample_rate = if req.audio_sample_rate == 0 {
+            16000
+        } else {
+            req.audio_sample_rate.clamp(8000, 48000)
+        };
+        let audio_chunk_ms = req.audio_chunk_ms.clamp(150, 1200);
+        let audio_duration_s = audio_chunk_ms as f32 / 1000.0;
+        let audio_capture_interval_ms = (audio_chunk_ms as i64 * 3).clamp(600, 2400);
+
+        let (tx, rx) = mpsc::channel(8);
+        tokio::spawn(async move {
+            let mut audio_warn_sent = false;
+            let mut last_audio_capture_ms = 0i64;
+            let mut last_audio_chunk: Vec<u8> = Vec::new();
+            loop {
+                let frame = match Self::capture_single_jpeg(&camera_conn).await {
+                    Ok(data) => data,
+                    Err(e) => {
+                        if tx
+                            .send(Ok(DeviceMediaChunk {
+                                device_id: req.device_id,
+                                timestamp_ms: Self::now_ms(),
+                                jpeg_frame: Vec::new(),
+                                audio: Vec::new(),
+                                audio_sample_rate: 0,
+                                message: format!("video_capture_error:{e}"),
+                            }))
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
+                        sleep(Duration::from_millis(250)).await;
+                        continue;
+                    }
+                };
+
+                let mut message = String::new();
+                let audio = if include_audio {
+                    match microphone_conn.as_deref() {
+                        Some(conn) => {
+                            let now_ms = Self::now_ms();
+                            if now_ms - last_audio_capture_ms >= audio_capture_interval_ms
+                                || last_audio_chunk.is_empty()
+                            {
+                                match Self::capture_mic_raw(conn, audio_duration_s, sample_rate).await {
+                                    Ok(data) => {
+                                        last_audio_capture_ms = now_ms;
+                                        last_audio_chunk = data;
+                                    }
+                                    Err(e) => {
+                                        if !audio_warn_sent {
+                                            message = format!("audio_capture_error:{e}");
+                                            audio_warn_sent = true;
+                                        }
+                                        last_audio_chunk.clear();
+                                    }
+                                }
+                            }
+                            last_audio_chunk.clone()
+                        }
+                        None => {
+                            if !audio_warn_sent {
+                                message = "audio_capture_error:microphone_not_configured".to_string();
+                                audio_warn_sent = true;
+                            }
+                            Vec::new()
+                        }
+                    }
+                } else {
+                    Vec::new()
+                };
+
+                if tx
+                    .send(Ok(DeviceMediaChunk {
+                        device_id: req.device_id,
+                        timestamp_ms: Self::now_ms(),
+                        jpeg_frame: frame,
+                        audio,
+                        audio_sample_rate: if include_audio { sample_rate } else { 0 },
+                        message,
+                    }))
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+
+                sleep(Duration::from_millis(frame_interval_ms)).await;
+            }
+        });
+
+        Ok(Response::new(ReceiverStream::new(rx)))
+    }
+
     async fn get_system_status(
         &self,
         _request: Request<Empty>,
     ) -> Result<Response<SystemStatusResponse>, Status> {
-        // Query Audio Worker
+        // Опрос Audio Worker
         let mut audio_client = AudioClient::new(self.audio_channel.clone());
         let audio_status = match audio_client.get_status(Empty {}).await {
             Ok(resp) => resp.into_inner(),
@@ -1737,7 +2328,7 @@ impl Gatekeeper for GatewayService {
             },
         };
 
-        // Query Vision Worker
+        // Опрос Vision Worker
         let mut vision_client = VisionClient::new(self.vision_channel.clone());
         let vision_status = match vision_client.get_status(Empty {}).await {
             Ok(resp) => resp.into_inner(),
@@ -1781,7 +2372,7 @@ impl Gatekeeper for GatewayService {
 
     async fn shutdown(&self, _request: Request<Empty>) -> Result<Response<Empty>, Status> {
         tracing::info!("Shutdown signal received for gateway");
-        // It's okay to ignore the error if the receiver is already dropped.
+        // Ошибку можно игнорировать, если receiver уже завершен.
         let _ = self.shutdown_tx.send(()).await;
         Ok(Response::new(Empty {}))
     }
@@ -1842,7 +2433,7 @@ impl Gatekeeper for GatewayService {
                 }
             }
             "gateway" => {
-                // To avoid deadlocking, we send the shutdown signal in a separate task
+                // Чтобы не блокировать текущий обработчик, отправляем сигнал в отдельной задаче.
                 let tx = self.shutdown_tx.clone();
                 tokio::spawn(async move {
                     let _ = tx.send(()).await;
@@ -1960,7 +2551,7 @@ impl Gatekeeper for GatewayService {
         let mut found_devices: Vec<Device> = Vec::new();
         let mut diagnostics: Vec<String> = Vec::new();
 
-        // 1. Get existing devices from DB
+        // 1) Читаем уже зарегистрированные устройства из БД.
         let db_devices: Vec<Device> = sqlx::query_as(
             r#"
             SELECT d.id, d.room_id, d.name, dt.name AS device_type, d.connection_string
@@ -1986,7 +2577,7 @@ impl Gatekeeper for GatewayService {
 
         found_devices.extend(db_devices.clone());
 
-        // 2. Scan server cameras (/dev/video*)
+        // 2) Сканируем камеры сервера (/dev/video*).
         if let Ok(paths) = glob("/dev/video*") {
             let mut cam_count = 0usize;
             for entry in paths {
@@ -2016,7 +2607,7 @@ impl Gatekeeper for GatewayService {
             diagnostics.push("glob /dev/video* failed".to_string());
         }
 
-        // 3. Scan server microphones via arecord -L
+        // 3) Сканируем микрофоны сервера через `arecord -L`.
         if let Ok(out) = Command::new("bash").arg("-lc").arg("arecord -L").output().await {
             if out.status.success() {
                 let text = String::from_utf8_lossy(&out.stdout);
@@ -2051,7 +2642,7 @@ impl Gatekeeper for GatewayService {
             diagnostics.push("arecord binary not available in gateway container".to_string());
         }
 
-        // 4. Scan lock files directory
+        // 4) Сканируем каталог lock-файлов.
         let locks_dir = std::env::var("LOCKS_DIR")
             .unwrap_or_else(|_| "/workspace/identification/locks".to_string());
         let _ = tokio::fs::create_dir_all(&locks_dir).await;
@@ -2093,7 +2684,7 @@ impl Gatekeeper for GatewayService {
             diagnostics.push(format!("cannot read locks dir {}", locks_dir));
         }
 
-        // Add default test camera if nothing found at all
+        // Если не найдено ни одного устройства, добавляем тестовую камеру.
         if found_devices.is_empty() {
             found_devices.push(self.get_default_test_device().await);
         }
@@ -2238,6 +2829,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         shutdown_tx,
         started_at_ms,
     );
+
+    // При старте контейнера pipeline всегда выключен до ручного запуска из клиента.
+    if let Err(e) = GatewayService::set_pipeline_running(false).await {
+        tracing::warn!(
+            "Не удалось сбросить флаг pipeline в 0 при старте: {}",
+            e.message()
+        );
+    }
 
     tracing::info!("Gateway Service listening on {}", addr);
 

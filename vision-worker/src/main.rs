@@ -158,7 +158,7 @@ fn build_cuda_builder(device_id: i32) -> Result<SessionBuilder> {
         .context("Failed to create session builder with CUDA execution provider")
 }
 
-// --- Helper Structs for Yunet ---
+// --- Вспомогательные структуры YuNet ---
 #[derive(Debug, Clone, Copy)]
 struct Face {
     bbox: [f32; 4],           // x, y, w, h
@@ -172,7 +172,7 @@ impl Face {
     }
 }
 
-// --- Helper Functions for Yunet ---
+// --- Вспомогательные функции YuNet ---
 fn decode_yunet_output(
     output_slice: &[f32],
     original_width: u32,
@@ -180,10 +180,9 @@ fn decode_yunet_output(
     score_threshold: f32,
     nms_threshold: f32,
 ) -> Result<Vec<Face>> {
-    // Yunet output is typically [1, 1, N, 15] or [N, 15]
-    // Each row: [x1, y1, x2, y2, score, right_eye_x, right_eye_y, ..., mouth_left_y]
-    // The model gives the bbox as x1, y1, x2, y2 (top-left, bottom-right corners)
-    // We need to convert it to x, y, w, h (top-left corner, width, height)
+    // Выход YuNet обычно имеет вид [1, 1, N, 15] или [N, 15].
+    // Строка: [x1, y1, x2, y2, score, right_eye_x, right_eye_y, ..., mouth_left_y].
+    // Конвертируем bbox из x1,y1,x2,y2 в x,y,w,h.
 
     let mut faces: Vec<Face> = Vec::new();
 
@@ -198,7 +197,7 @@ fn decode_yunet_output(
         let offset = i * num_elements_per_face;
         let data = &output_slice[offset..offset + num_elements_per_face];
 
-        let score = data[14]; // Score is the last element
+        let score = data[14]; // Score — последний элемент.
         if score < score_threshold {
             continue;
         }
@@ -225,9 +224,7 @@ fn decode_yunet_output(
         });
     }
 
-    // Apply Non-Maximum Suppression (NMS) - simple version
-    // For a more robust NMS, a dedicated NMS algorithm would be better.
-    // This is a basic approach.
+    // Простая реализация Non-Maximum Suppression (NMS).
 
     faces.sort_by(|a, b| {
         b.score
@@ -257,7 +254,7 @@ fn decode_yunet_output(
         }
     }
 
-    // Scale bounding boxes and landmarks to original image size
+    // Масштабируем bbox и landmarks к исходному размеру кадра.
     let scale_x = original_width as f32;
     let scale_y = original_height as f32;
 
@@ -576,7 +573,7 @@ impl Vision for VisionService {
             YUNET_INPUT_HEIGHT,
             FilterType::Triangle,
         );
-        // YuNet in this project expects NCHW: [1, 3, 640, 640]
+        // В этом проекте YuNet ожидает формат NCHW: [1, 3, 640, 640].
         let mut input_tensor_yunet = Array4::<f32>::zeros((
             1,
             3,
@@ -588,7 +585,7 @@ impl Vision for VisionService {
             let r = pixel[0] as f32;
             let g = pixel[1] as f32;
             let b = pixel[2] as f32;
-            // Normalize to 0-1
+            // Нормализация в диапазон 0..1.
             input_tensor_yunet[[0, 0, y as usize, x as usize]] = r / 255.0;
             input_tensor_yunet[[0, 1, y as usize, x as usize]] = g / 255.0;
             input_tensor_yunet[[0, 2, y as usize, x as usize]] = b / 255.0;
@@ -705,13 +702,13 @@ impl Vision for VisionService {
             }));
         };
 
-        // Crop the face
+        // Вырезаем область лица.
         let mut x = best_face.bbox[0].max(0.0).floor() as i32;
         let mut y = best_face.bbox[1].max(0.0).floor() as i32;
         let mut w = best_face.bbox[2].max(0.0).floor() as i32;
         let mut h = best_face.bbox[3].max(0.0).floor() as i32;
 
-        // Slight margin improves robustness on tight/unstable detections.
+        // Небольшой отступ повышает устойчивость при плотных/шумных детекциях.
         let margin_x = ((w as f32) * 0.12).round() as i32;
         let margin_y = ((h as f32) * 0.15).round() as i32;
         x = (x - margin_x).max(0);
@@ -832,7 +829,7 @@ impl Vision for VisionService {
             let r = pixel[0] as f32;
             let g = pixel[1] as f32;
             let b = pixel[2] as f32;
-            // (x - 127.5) / 128.0
+            // Нормализация ArcFace: (x - 127.5) / 128.0.
             input_tensor_arc[[0, y_i as usize, x_i as usize, 0]] = (r - 127.5) / 128.0;
             input_tensor_arc[[0, y_i as usize, x_i as usize, 1]] = (g - 127.5) / 128.0;
             input_tensor_arc[[0, y_i as usize, x_i as usize, 2]] = (b - 127.5) / 128.0;
@@ -869,7 +866,7 @@ impl Vision for VisionService {
             let r = pixel[0] as f32;
             let g = pixel[1] as f32;
             let b = pixel[2] as f32;
-            // 0-1
+            // Нормализация в диапазон 0..1.
             input_tensor_live[[0, 0, y_i as usize, x_i as usize]] = r / 255.0;
             input_tensor_live[[0, 1, y_i as usize, x_i as usize]] = g / 255.0;
             input_tensor_live[[0, 2, y_i as usize, x_i as usize]] = b / 255.0;
@@ -896,7 +893,7 @@ impl Vision for VisionService {
         })?;
 
         let liveness_score = if live_out.len() >= 2 {
-            // Softmax
+            // Softmax.
             let exp_sum: f32 = live_out.iter().map(|x| x.exp()).sum();
             live_out[1].exp() / exp_sum
         } else {
@@ -946,7 +943,7 @@ impl Vision for VisionService {
     }
 }
 
-// --- Main ---
+// --- Точка входа ---
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -954,7 +951,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Папка с моделями
     let possible_paths = ["vision-worker/models", "models"];
-    let mut models_dir = "models"; // fallback
+    let mut models_dir = "models"; // Резервный путь.
     for path in &possible_paths {
         if Path::new(path).exists() && Path::new(path).join("MiniFASNetV2.onnx").exists() {
             models_dir = path;

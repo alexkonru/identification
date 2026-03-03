@@ -5,7 +5,7 @@ package biometry;
 service Gatekeeper {
   // --- Пользователи ---
   rpc RegisterUser (RegisterUserRequest) returns (IdResponse);
-  rpc AddBiometry (AddBiometryRequest) returns (Empty); // NEW
+  rpc AddBiometry (AddBiometryRequest) returns (Empty);
   rpc RemoveUser (IdRequest) returns (Empty);
   rpc ListUsers (ListUsersRequest) returns (ListUsersResponse);
   
@@ -33,6 +33,7 @@ service Gatekeeper {
   rpc ControlService (ControlServiceRequest) returns (StatusResponse); 
   rpc ControlDoor (ControlDoorRequest) returns (StatusResponse); 
   rpc ScanHardware (Empty) returns (ScanHardwareResponse); 
+  rpc StreamDeviceMedia (DeviceMediaRequest) returns (stream DeviceMediaChunk);
   rpc ApplyRuntimeMode (RuntimeModeRequest) returns (RuntimeModeResponse);
   
   // --- Журнал ---
@@ -70,11 +71,11 @@ message IdResponse {
   int32 id = 1;
 }
 
-// Users
+// Пользователи
 message RegisterUserRequest {
   string name = 1;
-  repeated bytes images = 2; // CHANGED to repeated
-  repeated bytes voices = 3; // NEW
+  repeated bytes images = 2;
+  repeated bytes voices = 3;
 }
 
 message AddBiometryRequest {
@@ -94,7 +95,7 @@ message ListUsersResponse {
   repeated User users = 1;
 }
 
-// Infrastructure
+// Инфраструктура
 message AddZoneRequest {
   string name = 1;
 }
@@ -146,7 +147,7 @@ message ListDevicesResponse {
   repeated Device devices = 1;
 }
 
-// Access
+// Контроль доступа
 message GrantAccessRequest {
   int32 user_id = 1;
   int32 zone_id = 2;
@@ -232,7 +233,7 @@ message AccessCheckResponseV2 {
   string session_id = 21;
 }
 
-// Vision & Audio
+// Vision и Audio
 message ImageFrame {
   bytes content = 1;
 }
@@ -285,11 +286,11 @@ message DoorAgentStatusResponse {
   int32 cooldown_sessions = 2;
 }
 
-// System Management
+// Управление системой
 message ServiceStatus {
   bool online = 1;
-  string device = 2; // "CUDA", "CPU"
-  string message = 3; // "OK" or error details
+  string device = 2; // Например: "CUDA", "CPU".
+  string message = 3; // "OK" или детали ошибки.
 }
 
 message SystemStatusResponse {
@@ -318,6 +319,23 @@ message ScanHardwareResponse {
   repeated Device found_devices = 1; 
 }
 
+message DeviceMediaRequest {
+  int32 device_id = 1;
+  uint32 target_fps = 2;
+  bool include_audio = 3;
+  uint32 audio_sample_rate = 4;
+  uint32 audio_chunk_ms = 5;
+}
+
+message DeviceMediaChunk {
+  int32 device_id = 1;
+  int64 timestamp_ms = 2;
+  bytes jpeg_frame = 3;
+  bytes audio = 4;
+  uint32 audio_sample_rate = 5;
+  string message = 6;
+}
+
 message RuntimeModeRequest {
   string mode = 1; // auto | cpu | gpu
   bool restart_services = 2;
@@ -334,7 +352,7 @@ message RuntimeModeResponse {
   int32 audio_threads = 8;
 }
 
-// Logs
+// Журнал
 message GetLogsRequest {
   int32 limit = 1;
   int32 offset = 2;

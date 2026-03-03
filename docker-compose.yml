@@ -21,7 +21,7 @@ services:
     image: identification-rust-base:latest
     container_name: vision-worker
     working_dir: /workspace/identification
-    command: ["bash", "-lc", "cargo run --release -p vision-worker"]
+    command: ["bash", "-lc", "if [ -x target/release/vision-worker ]; then target/release/vision-worker; else cargo run --release -p vision-worker; fi"]
     cpuset: "${VISION_CPUSET:-0,1}"
     ports:
       - "50052:50052"
@@ -29,11 +29,8 @@ services:
       - .:/workspace/identification
       - cargo-registry:/usr/local/cargo/registry
       - cargo-git:/usr/local/cargo/git
-      - target-cache-vision:/workspace/identification/target
     environment:
-      RUST_LOG: "${RUST_LOG:-vision_worker=info,ort::logging=warn}"
-      # По умолчанию на слабых ноутбуках (MX230/Vega) безопаснее CPU.
-      # На мощной NVIDIA: VISION_FORCE_CPU=0
+      RUST_LOG: "${VISION_RUST_LOG:-vision_worker=info,ort::logging=warn}"
       VISION_FORCE_CPU: "${VISION_FORCE_CPU:-1}"
       VISION_CUDA_DEVICE_ID: "${VISION_CUDA_DEVICE_ID:-}"
       VISION_CUDA_MEM_LIMIT_MB: "${VISION_CUDA_MEM_LIMIT_MB:-1024}"
@@ -65,7 +62,7 @@ services:
     image: identification-rust-base:latest
     container_name: audio-worker
     working_dir: /workspace/identification
-    command: ["bash", "-lc", "cargo run --release -p audio-worker"]
+    command: ["bash", "-lc", "if [ -x target/release/audio-worker ]; then target/release/audio-worker; else cargo run --release -p audio-worker; fi"]
     cpuset: "${AUDIO_CPUSET:-2,3}"
     ports:
       - "50053:50053"
@@ -73,9 +70,8 @@ services:
       - .:/workspace/identification
       - cargo-registry:/usr/local/cargo/registry
       - cargo-git:/usr/local/cargo/git
-      - target-cache-audio:/workspace/identification/target
     environment:
-      RUST_LOG: "${RUST_LOG:-audio_worker=info,ort::logging=warn}"
+      RUST_LOG: "${AUDIO_RUST_LOG:-audio_worker=info,ort::logging=warn}"
       AUDIO_FORCE_CPU: "${AUDIO_FORCE_CPU:-1}"
       AUDIO_USE_CUDA: "${AUDIO_USE_CUDA:-0}"
       AUDIO_CUDA_MEM_LIMIT_MB: "${AUDIO_CUDA_MEM_LIMIT_MB:-256}"
@@ -97,6 +93,7 @@ services:
   gateway-service:
     image: identification-rust-base:latest
     container_name: gateway-service
+    privileged: true
     working_dir: /workspace/identification
     command: ["bash", "-lc", "cargo run --release -p gateway-service"]
     cpuset: "${GATEWAY_CPUSET:-0-3}"
@@ -104,14 +101,12 @@ services:
       - "50051:50051"
     volumes:
       - .:/workspace/identification
+      - /dev:/dev
       - cargo-registry:/usr/local/cargo/registry
       - cargo-git:/usr/local/cargo/git
       - target-cache-gateway:/workspace/identification/target
-    devices:
-      - "/dev/video0:/dev/video0"
-      - "/dev/snd:/dev/snd"
     environment:
-      RUST_LOG: "${RUST_LOG:-gateway_service=info}"
+      RUST_LOG: "${GATEWAY_RUST_LOG:-gateway_service=info}"
       DATABASE_URL: "postgres://user:password@db:5432/biometry_db"
       AUDIO_URL: "http://audio-worker:50053"
       VISION_URL: "http://vision-worker:50052"
@@ -129,6 +124,7 @@ services:
       ACCESS_CLIP_MIN_DETECTED_RATIO: "${ACCESS_CLIP_MIN_DETECTED_RATIO:-0.67}"
       DOOR_CONTROLLER_LOG_PATH: "${DOOR_CONTROLLER_LOG_PATH:-/workspace/identification/door_controller_state.log}"
       LOCKS_DIR: "${LOCKS_DIR:-/workspace/identification/locks}"
+      CAMERA_LOCK_DIR: "${CAMERA_LOCK_DIR:-/workspace/identification/locks}"
       DOOR_OPEN_MS: "${DOOR_OPEN_MS:-5000}"
       DOOR_AUTO_OPEN_ON_GRANT: "${DOOR_AUTO_OPEN_ON_GRANT:-1}"
       DOOR_OPEN_STARTUP_WARMUP_MS: "${DOOR_OPEN_STARTUP_WARMUP_MS:-15000}"
@@ -145,30 +141,28 @@ services:
   door-agent:
     image: identification-rust-base:latest
     container_name: door-agent
+    privileged: true
     working_dir: /workspace/identification
     command: ["bash", "-lc", "cargo run --release -p door-agent"]
     cpuset: "${DOOR_AGENT_CPUSET:-0-1}"
-    ports:
-      - "50054:50054"
     volumes:
       - .:/workspace/identification
+      - /dev:/dev
       - cargo-registry:/usr/local/cargo/registry
       - cargo-git:/usr/local/cargo/git
       - target-cache-door-agent:/workspace/identification/target
-    devices:
-      - "/dev/video0:/dev/video0"
-      - "/dev/snd:/dev/snd"
     environment:
-      RUST_LOG: "${RUST_LOG:-door_agent=info}"
+      RUST_LOG: "${DOOR_AGENT_RUST_LOG:-door_agent=info}"
       GATEWAY_ADDR: "http://gateway-service:50051"
-      DOOR_MAX_CLIP_FRAMES: "${DOOR_MAX_CLIP_FRAMES:-3}"
+      DOOR_MAX_CLIP_FRAMES: "${DOOR_MAX_CLIP_FRAMES:-8}"
       DOOR_PRESENCE_TIMEOUT_MS: "${DOOR_PRESENCE_TIMEOUT_MS:-1500}"
       DOOR_COOLDOWN_MS: "${DOOR_COOLDOWN_MS:-2000}"
       DOOR_BACKGROUND_ENABLED: "${DOOR_BACKGROUND_ENABLED:-1}"
-      DOOR_BG_FRAMES: "${DOOR_BG_FRAMES:-3}"
+      DOOR_BG_FRAMES: "${DOOR_BG_FRAMES:-8}"
       DOOR_BG_TICK_MS: "${DOOR_BG_TICK_MS:-500}"
       DOOR_BG_COOLDOWN_MS: "${DOOR_BG_COOLDOWN_MS:-2500}"
       DOOR_BG_USE_MIC: "${DOOR_BG_USE_MIC:-1}"
+      CAMERA_LOCK_DIR: "${CAMERA_LOCK_DIR:-/workspace/identification/locks}"
       SYSTEM_RUN_FLAG_PATH: "${SYSTEM_RUN_FLAG_PATH:-/workspace/identification/.system_run}"
     depends_on:
       gateway-service:
@@ -178,7 +172,5 @@ volumes:
   db-data:
   cargo-registry:
   cargo-git:
-  target-cache-vision:
-  target-cache-audio:
   target-cache-gateway:
   target-cache-door-agent:
