@@ -1,13 +1,14 @@
 use shared::biometry::door_agent_server::{DoorAgent, DoorAgentServer};
 use shared::biometry::gatekeeper_client::GatekeeperClient;
 use shared::biometry::{
-    CheckAccessRequestV2, DoorAgentStatusResponse, DoorObservationRequest, DoorObservationResponse,
-    DoorPipelineStage, Empty, ListDevicesRequest,
+    CheckAccessRequestV2, DeviceMediaChunk, DoorAgentStatusResponse, DoorObservationRequest,
+    DoorObservationResponse, DoorPipelineStage, Empty, IdRequest, ListDevicesRequest,
 };
 use std::collections::HashMap;
-use tokio::process::Command;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tokio::io::AsyncReadExt;
+use tokio::process::{Child, ChildStderr, ChildStdout, Command};
 use tokio::sync::Mutex;
 use tonic::{Request, Response, Status, transport::Server};
 
@@ -26,6 +27,7 @@ struct DeviceState {
 #[derive(Clone)]
 struct DoorAgentService {
     states: Arc<Mutex<HashMap<i32, DeviceState>>>,
+    preview_frames: Arc<Mutex<HashMap<i32, PreviewFrame>>>,
     gateway_addr: String,
     max_clip_frames: usize,
     presence_timeout_ms: i64,
@@ -38,6 +40,20 @@ struct RoomPointConfig {
     camera_device_id: i32,
     camera_conn: String,
     microphone_conn: Option<String>,
+}
+
+struct CameraMjpegStream {
+    child: Child,
+    stdout: ChildStdout,
+    stderr: ChildStderr,
+    buffer: Vec<u8>,
+}
+
+#[derive(Clone, Default)]
+struct PreviewFrame {
+    device_id: i32,
+    timestamp_ms: i64,
+    jpeg_frame: Vec<u8>,
 }
 
 fn env_parse<T: std::str::FromStr>(name: &str, default: T) -> T {
@@ -143,31 +159,250 @@ fn camera_lock_path(conn: &str) -> String {
     format!("{}/biometry_cam_{}.lock", lock_dir.trim_end_matches('/'), id)
 }
 
-async fn capture_single_jpeg(conn: &str) -> Option<Vec<u8>> {
+async fn open_camera_stream(conn: &str) -> Result<CameraMjpegStream, String> {
     let input = camera_input_from_conn(conn);
-    let cmd = if input.starts_with("/dev/video") {
-        let lock_path = camera_lock_path(conn);
-        format!(
-            "flock -w 2 '{}' ffmpeg -loglevel error -y -f v4l2 -i '{}' -frames:v 1 -f image2pipe -vcodec mjpeg -",
-            lock_path,
-            input.replace('\'', "")
-        )
+    let mut cmd = if input.starts_with("/dev/video") {
+        let mut command = Command::new("flock");
+        command
+            .arg("-w")
+            .arg("2")
+            .arg("-E")
+            .arg("75")
+            .arg(camera_lock_path(conn))
+            .arg("ffmpeg")
+            .arg("-loglevel")
+            .arg("error")
+            .arg("-nostdin")
+            .arg("-fflags")
+            .arg("nobuffer")
+            .arg("-flags")
+            .arg("low_delay")
+            .arg("-f")
+            .arg("v4l2")
+            .arg("-framerate")
+            .arg(env_parse::<u32>("DOOR_CAMERA_INPUT_FPS", 10).max(1).to_string())
+            .arg("-i")
+            .arg(&input)
+            .arg("-vf")
+            .arg(format!("fps={}", env_parse::<u32>("DOOR_CAMERA_OUTPUT_FPS", 8).clamp(1, 15)))
+            .arg("-f")
+            .arg("image2pipe")
+            .arg("-vcodec")
+            .arg("mjpeg")
+            .arg("-q:v")
+            .arg("5")
+            .arg("-");
+        command
     } else {
-        format!(
-            "ffmpeg -loglevel error -y -i '{}' -frames:v 1 -f image2pipe -vcodec mjpeg -",
-            input.replace('\'', "")
-        )
+        let mut command = Command::new("ffmpeg");
+        command
+            .arg("-loglevel")
+            .arg("error")
+            .arg("-nostdin")
+            .arg("-fflags")
+            .arg("nobuffer")
+            .arg("-flags")
+            .arg("low_delay")
+            .arg("-threads")
+            .arg("1")
+            .arg("-i")
+            .arg(&input)
+            .arg("-vf")
+            .arg(format!("fps={}", env_parse::<u32>("DOOR_CAMERA_OUTPUT_FPS", 8).clamp(1, 15)))
+            .arg("-f")
+            .arg("image2pipe")
+            .arg("-vcodec")
+            .arg("mjpeg")
+            .arg("-q:v")
+            .arg("5")
+            .arg("-");
+        command
     };
-    let output = Command::new("bash")
-        .arg("-lc")
-        .arg(cmd)
+    let mut child = cmd
+        .kill_on_drop(true)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("ffmpeg spawn failed: {}", e))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "ffmpeg stdout unavailable".to_string())?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| "ffmpeg stderr unavailable".to_string())?;
+    Ok(CameraMjpegStream {
+        child,
+        stdout,
+        stderr,
+        buffer: Vec::with_capacity(256 * 1024),
+    })
+}
+
+async fn read_camera_stderr(stderr: &mut ChildStderr) -> String {
+    let mut buf = Vec::new();
+    match tokio::time::timeout(Duration::from_millis(150), stderr.read_to_end(&mut buf)).await {
+        Ok(Ok(_)) => String::from_utf8_lossy(&buf).trim().to_string(),
+        _ => String::new(),
+    }
+}
+
+async fn read_next_jpeg_frame(
+    stream: &mut CameraMjpegStream,
+    frame_timeout: Duration,
+) -> Result<Vec<u8>, String> {
+    let mut tmp = vec![0u8; 16 * 1024];
+    loop {
+        let start = stream
+            .buffer
+            .windows(2)
+            .position(|w| w == [0xFF, 0xD8]);
+        if let Some(start_idx) = start {
+            if let Some(rel_end) = stream.buffer[start_idx + 2..]
+                .windows(2)
+                .position(|w| w == [0xFF, 0xD9])
+            {
+                let end_idx = start_idx + 2 + rel_end + 2;
+                let frame = stream.buffer[start_idx..end_idx].to_vec();
+                stream.buffer.drain(..end_idx);
+                return Ok(frame);
+            }
+            if start_idx > 0 {
+                stream.buffer.drain(..start_idx);
+            }
+        } else if stream.buffer.len() > 512 * 1024 {
+            let keep = 64 * 1024;
+            let drain_to = stream.buffer.len().saturating_sub(keep);
+            if drain_to > 0 {
+                stream.buffer.drain(..drain_to);
+            }
+        }
+
+        let n = match tokio::time::timeout(frame_timeout, stream.stdout.read(&mut tmp)).await {
+            Ok(Ok(n)) => n,
+            Ok(Err(e)) => return Err(format!("ffmpeg stream read failed: {}", e)),
+            Err(_) => return Err("ffmpeg stream read timeout".to_string()),
+        };
+        if n == 0 {
+            return match stream.child.try_wait() {
+                Ok(Some(status)) => {
+                    if status.code() == Some(75) {
+                        Err("camera device busy".to_string())
+                    } else {
+                        let stderr = read_camera_stderr(&mut stream.stderr).await;
+                        if stderr.is_empty() {
+                            Err(format!("ffmpeg exited with status {}", status))
+                        } else {
+                            Err(format!("ffmpeg exited with status {}: {}", status, stderr))
+                        }
+                    }
+                }
+                Ok(None) => Err("ffmpeg stream closed unexpectedly".to_string()),
+                Err(e) => Err(format!("ffmpeg wait check failed: {}", e)),
+            };
+        }
+        stream.buffer.extend_from_slice(&tmp[..n]);
+    }
+}
+
+async fn capture_single_jpeg(conn: &str) -> Result<Vec<u8>, String> {
+    let input = camera_input_from_conn(conn);
+    let mut cmd = if input.starts_with("/dev/video") {
+        let mut command = Command::new("flock");
+        command
+            .arg("-w")
+            .arg("2")
+            .arg("-E")
+            .arg("75")
+            .arg(camera_lock_path(conn))
+            .arg("ffmpeg")
+            .arg("-loglevel")
+            .arg("error")
+            .arg("-nostdin")
+            .arg("-f")
+            .arg("v4l2")
+            .arg("-framerate")
+            .arg(env_parse::<u32>("DOOR_CAMERA_INPUT_FPS", 10).max(1).to_string())
+            .arg("-i")
+            .arg(&input)
+            .arg("-frames:v")
+            .arg("1")
+            .arg("-vcodec")
+            .arg("mjpeg")
+            .arg("-q:v")
+            .arg("5")
+            .arg("-f")
+            .arg("mjpeg")
+            .arg("-");
+        command
+    } else {
+        let mut command = Command::new("ffmpeg");
+        command
+            .arg("-loglevel")
+            .arg("error")
+            .arg("-nostdin");
+        if input.starts_with("rtsp://") {
+            command.arg("-rtsp_transport").arg("tcp");
+        }
+        command
+            .arg("-i")
+            .arg(&input)
+            .arg("-frames:v")
+            .arg("1")
+            .arg("-vcodec")
+            .arg("mjpeg")
+            .arg("-q:v")
+            .arg("5")
+            .arg("-f")
+            .arg("mjpeg")
+            .arg("-");
+        command
+    };
+
+    let output = cmd
         .output()
         .await
-        .ok()?;
-    if !output.status.success() || output.stdout.is_empty() {
-        return None;
+        .map_err(|e| format!("ffmpeg capture failed: {}", e))?;
+    if output.status.success() && !output.stdout.is_empty() {
+        return Ok(output.stdout);
     }
-    Some(output.stdout)
+    if output.status.code() == Some(75) {
+        return Err("camera device busy".to_string());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    if stderr.is_empty() {
+        Err(format!("ffmpeg exited with status {}", output.status))
+    } else {
+        Err(format!("ffmpeg exited with status {}: {}", output.status, stderr))
+    }
+}
+
+async fn capture_next_frame_for_room(
+    streams: &mut HashMap<i32, CameraMjpegStream>,
+    room_id: i32,
+    conn: &str,
+    frame_timeout: Duration,
+) -> Result<Vec<u8>, String> {
+    let use_one_shot = env_flag("DOOR_CAMERA_ONE_SHOT", true)
+        && camera_input_from_conn(conn).starts_with("/dev/video");
+    if use_one_shot {
+        return capture_single_jpeg(conn).await;
+    }
+    if !streams.contains_key(&room_id) {
+        let stream = open_camera_stream(conn).await?;
+        streams.insert(room_id, stream);
+    }
+    let result = {
+        let stream = streams
+            .get_mut(&room_id)
+            .ok_or_else(|| "camera stream missing".to_string())?;
+        read_next_jpeg_frame(stream, frame_timeout).await
+    };
+    if result.is_err() {
+        streams.remove(&room_id);
+    }
+    result
 }
 
 async fn capture_mic_raw(conn: &str, duration_s: f32) -> Option<Vec<u8>> {
@@ -229,26 +464,102 @@ async fn discover_room_points(gateway_addr: &str) -> Result<Vec<RoomPointConfig>
     Ok(out)
 }
 
-async fn run_background_live_loop(gateway_addr: String) {
-    let enabled = env_flag("DOOR_BACKGROUND_ENABLED", true);
-    if !enabled {
-        tracing::info!("door-agent background loop disabled by DOOR_BACKGROUND_ENABLED=0");
-        return;
-    }
-    let frames_per_check = env_parse::<usize>("DOOR_BG_FRAMES", 8).max(1);
-    let tick_ms = env_parse::<u64>("DOOR_BG_TICK_MS", 500).max(100);
-    let cooldown_ms = env_parse::<i64>("DOOR_BG_COOLDOWN_MS", 2500).max(500);
-    let use_microphone = env_flag("DOOR_BG_USE_MIC", true);
+async fn run_preview_refresh_loop(
+    gateway_addr: String,
+    preview_frames: Arc<Mutex<HashMap<i32, PreviewFrame>>>,
+) {
     let run_flag_path = std::env::var("SYSTEM_RUN_FLAG_PATH")
         .unwrap_or_else(|_| "/workspace/identification/.system_run".to_string());
+    let preview_interval_ms = env_parse::<u64>("DOOR_PREVIEW_INTERVAL_MS", 120).max(80);
+    let mut preview_streams: HashMap<i32, CameraMjpegStream> = HashMap::new();
 
-    let mut next_allowed_ms: HashMap<i32, i64> = HashMap::new();
     loop {
         let running = tokio::fs::read_to_string(&run_flag_path)
             .await
             .map(|s| s.trim() == "1")
             .unwrap_or(false);
         if !running {
+            preview_streams.clear();
+            preview_frames.lock().await.clear();
+            tokio::time::sleep(Duration::from_millis(preview_interval_ms)).await;
+            continue;
+        }
+
+        match discover_room_points(&gateway_addr).await {
+            Ok(points) => {
+                for point in points {
+                    match capture_next_frame_for_room(
+                        &mut preview_streams,
+                        point.room_id,
+                        &point.camera_conn,
+                        Duration::from_millis(
+                            env_parse::<u64>("DOOR_CAMERA_FRAME_TIMEOUT_MS", 2500),
+                        ),
+                    )
+                    .await
+                    {
+                        Ok(frame) => {
+                            let ts_now = now_ms();
+                            preview_frames.lock().await.insert(
+                                point.camera_device_id,
+                                PreviewFrame {
+                                    device_id: point.camera_device_id,
+                                    timestamp_ms: ts_now,
+                                    jpeg_frame: frame,
+                                },
+                            );
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                "preview capture failed room {} ({}): {}",
+                                point.room_id,
+                                point.camera_conn,
+                                e
+                            );
+                            preview_streams.remove(&point.room_id);
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                preview_streams.clear();
+                preview_frames.lock().await.clear();
+                tracing::warn!("preview discovery failed: {}", e.message());
+            }
+        }
+
+        tokio::time::sleep(Duration::from_millis(preview_interval_ms)).await;
+    }
+}
+
+async fn run_background_live_loop(
+    gateway_addr: String,
+    preview_frames: Arc<Mutex<HashMap<i32, PreviewFrame>>>,
+) {
+    let enabled = env_flag("DOOR_BACKGROUND_ENABLED", true);
+    if !enabled {
+        tracing::info!("door-agent background loop disabled by DOOR_BACKGROUND_ENABLED=0");
+        return;
+    }
+    let frames_per_check = env_parse::<usize>("DOOR_BG_FRAMES", 5).max(1);
+    let tick_ms = env_parse::<u64>("DOOR_BG_TICK_MS", 250).max(80);
+    let cooldown_ms = env_parse::<i64>("DOOR_BG_COOLDOWN_MS", 900).max(300);
+    let use_microphone = env_flag("DOOR_BG_USE_MIC", true);
+    let mic_duration_s = env_parse::<f32>("DOOR_BG_AUDIO_SECONDS", 1.6).clamp(0.4, 4.0);
+    let run_flag_path = std::env::var("SYSTEM_RUN_FLAG_PATH")
+        .unwrap_or_else(|_| "/workspace/identification/.system_run".to_string());
+
+    let mut next_allowed_ms: HashMap<i32, i64> = HashMap::new();
+    let mut camera_streams: HashMap<i32, CameraMjpegStream> = HashMap::new();
+    loop {
+        let running = tokio::fs::read_to_string(&run_flag_path)
+            .await
+            .map(|s| s.trim() == "1")
+            .unwrap_or(false);
+        if !running {
+            // При остановке системы гарантированно освобождаем камеры.
+            camera_streams.clear();
+            preview_frames.lock().await.clear();
             tokio::time::sleep(Duration::from_millis(tick_ms)).await;
             continue;
         }
@@ -256,15 +567,84 @@ async fn run_background_live_loop(gateway_addr: String) {
             Ok(points) => {
                 for point in points {
                     let now = now_ms();
-                    if now < *next_allowed_ms.get(&point.room_id).unwrap_or(&0) {
-                        continue;
+                    let frame_timeout = Duration::from_millis(
+                        env_parse::<u64>("DOOR_CAMERA_FRAME_TIMEOUT_MS", 2500),
+                    );
+                    let next_allowed = *next_allowed_ms.get(&point.room_id).unwrap_or(&0);
+                    let identification_due = now >= next_allowed;
+
+                    let mut preview_frame: Option<(Vec<u8>, i64)> = None;
+                    if identification_due {
+                        match capture_next_frame_for_room(
+                            &mut camera_streams,
+                            point.room_id,
+                            &point.camera_conn,
+                            frame_timeout,
+                        )
+                        .await
+                        {
+                            Ok(frame) => {
+                                let ts_now = now_ms();
+                                preview_frames.lock().await.insert(
+                                    point.camera_device_id,
+                                    PreviewFrame {
+                                        device_id: point.camera_device_id,
+                                        timestamp_ms: ts_now,
+                                        jpeg_frame: frame.clone(),
+                                    },
+                                );
+                                preview_frame = Some((frame, ts_now));
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    "background preview capture failed room {} ({}): {}",
+                                    point.room_id,
+                                    point.camera_conn,
+                                    e
+                                );
+                                next_allowed_ms.insert(point.room_id, now + cooldown_ms);
+                                continue;
+                            }
+                        }
                     }
+
                     let mut frames = Vec::new();
                     let mut ts = Vec::new();
-                    for _ in 0..frames_per_check {
-                        if let Some(frame) = capture_single_jpeg(&point.camera_conn).await {
-                            frames.push(frame);
-                            ts.push(now_ms());
+                    if let Some((frame, ts_now)) = preview_frame.take() {
+                        frames.push(frame);
+                        ts.push(ts_now);
+                    }
+                    for _ in frames.len()..frames_per_check {
+                        match capture_next_frame_for_room(
+                            &mut camera_streams,
+                            point.room_id,
+                            &point.camera_conn,
+                            frame_timeout,
+                        )
+                        .await
+                        {
+                            Ok(frame) => {
+                                let ts_now = now_ms();
+                                preview_frames.lock().await.insert(
+                                    point.camera_device_id,
+                                    PreviewFrame {
+                                        device_id: point.camera_device_id,
+                                        timestamp_ms: ts_now,
+                                        jpeg_frame: frame.clone(),
+                                    },
+                                );
+                                frames.push(frame);
+                                ts.push(ts_now);
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    "background frame capture failed room {} ({}): {}",
+                                    point.room_id,
+                                    point.camera_conn,
+                                    e
+                                );
+                                break;
+                            }
                         }
                     }
                     if frames.is_empty() {
@@ -278,7 +658,7 @@ async fn run_background_live_loop(gateway_addr: String) {
                     }
                     let audio = if use_microphone {
                         match &point.microphone_conn {
-                            Some(mic) => capture_mic_raw(mic, 1.0).await.unwrap_or_default(),
+                            Some(mic) => capture_mic_raw(mic, mic_duration_s).await.unwrap_or_default(),
                             None => Vec::new(),
                         }
                     } else {
@@ -325,6 +705,8 @@ async fn run_background_live_loop(gateway_addr: String) {
                 }
             }
             Err(e) => {
+                camera_streams.clear();
+                preview_frames.lock().await.clear();
                 tracing::warn!("background discovery failed: {}", e.message());
             }
         }
@@ -486,6 +868,35 @@ impl DoorAgent for DoorAgentService {
             cooldown_sessions,
         }))
     }
+
+    async fn get_latest_preview_frame(
+        &self,
+        request: Request<IdRequest>,
+    ) -> Result<Response<DeviceMediaChunk>, Status> {
+        let device_id = request.into_inner().id;
+        if device_id <= 0 {
+            return Err(Status::invalid_argument("device_id must be > 0"));
+        }
+
+        let ttl_ms = env_parse::<i64>("DOOR_PREVIEW_TTL_MS", 2500).max(250);
+        let now = Self::now_ms();
+        let frames = self.preview_frames.lock().await;
+        let Some(frame) = frames.get(&device_id) else {
+            return Err(Status::unavailable("preview frame not available"));
+        };
+        if frame.jpeg_frame.is_empty() || now - frame.timestamp_ms > ttl_ms {
+            return Err(Status::unavailable("preview frame is stale"));
+        }
+
+        Ok(Response::new(DeviceMediaChunk {
+            device_id: frame.device_id,
+            timestamp_ms: frame.timestamp_ms,
+            jpeg_frame: frame.jpeg_frame.clone(),
+            audio: Vec::new(),
+            audio_sample_rate: 0,
+            message: String::new(),
+        }))
+    }
 }
 
 #[tokio::main]
@@ -496,19 +907,27 @@ async fn main() -> anyhow::Result<()> {
         std::env::var("DOOR_AGENT_ADDR").unwrap_or_else(|_| "0.0.0.0:50054".to_string());
     let gateway_addr =
         std::env::var("GATEWAY_ADDR").unwrap_or_else(|_| "http://127.0.0.1:50051".to_string());
-    let max_clip_frames = env_parse::<usize>("DOOR_MAX_CLIP_FRAMES", 8).max(1);
+    let max_clip_frames = env_parse::<usize>("DOOR_MAX_CLIP_FRAMES", 5).max(1);
     let presence_timeout_ms = env_parse::<i64>("DOOR_PRESENCE_TIMEOUT_MS", 1500).max(200);
-    let cooldown_ms = env_parse::<i64>("DOOR_COOLDOWN_MS", 2000).max(200);
+    let cooldown_ms = env_parse::<i64>("DOOR_COOLDOWN_MS", 800).max(150);
 
     let svc = DoorAgentService {
         states: Arc::new(Mutex::new(HashMap::new())),
+        preview_frames: Arc::new(Mutex::new(HashMap::new())),
         gateway_addr: gateway_addr.clone(),
         max_clip_frames,
         presence_timeout_ms,
         cooldown_ms,
     };
 
-    tokio::spawn(run_background_live_loop(gateway_addr));
+    tokio::spawn(run_preview_refresh_loop(
+        gateway_addr.clone(),
+        Arc::clone(&svc.preview_frames),
+    ));
+    tokio::spawn(run_background_live_loop(
+        gateway_addr,
+        Arc::clone(&svc.preview_frames),
+    ));
 
     tracing::info!("door-agent listening on {}", listen_addr);
     Server::builder()

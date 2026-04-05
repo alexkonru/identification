@@ -25,6 +25,12 @@ from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal, QMutex
 import biometry_pb2
 import biometry_pb2_grpc
 
+if hasattr(cv2, "setLogLevel"):
+    try:
+        cv2.setLogLevel(0)
+    except Exception:
+        pass
+
 
 PHI = 1.61803398875
 INV_PHI = 1.0 / PHI
@@ -32,6 +38,83 @@ DEFAULT_UI_SETTINGS = {"theme": "light", "font_size": 13, "voice_modality": True
 SYSTEM_MESSAGES_MAX_LINES = 160
 PIPELINE_LOG_MAX_LINES = 80
 SYSTEM_LOG_MAX_LINES = 120
+VOICE_RECORD_MS = 4200
+VOICE_SAMPLE_RATE = 16000
+REGISTRATION_VOICE_PHRASE = "Я подтверждаю свою личность и право доступа в помещение."
+
+
+def normalize_person_name(name: str) -> str:
+    return " ".join((name or "").split())
+
+
+def validate_person_name(name: str) -> tuple[bool, str, str]:
+    normalized = normalize_person_name(name)
+    if not normalized:
+        return False, normalized, "Введите ФИО"
+    parts = normalized.split(" ")
+    if len(parts) != 3:
+        return False, normalized, "Введите ФИО полностью: Фамилия Имя Отчество"
+    for part in parts:
+        if part.startswith("-") or part.endswith("-") or "--" in part:
+            return False, normalized, "ФИО содержит некорректные дефисы"
+        if sum(1 for ch in part if ch.isalpha()) < 2:
+            return False, normalized, "Каждая часть ФИО должна содержать минимум 2 буквы"
+        if not all(ch.isalpha() or ch == "-" for ch in part):
+            return False, normalized, "ФИО может содержать только буквы, пробелы и дефис"
+    pretty = " ".join(part[:1].upper() + part[1:].lower() for part in parts)
+    return True, pretty, ""
+
+
+def audio_has_voice(raw: bytes) -> bool:
+    if not raw:
+        return False
+    pcm = np.frombuffer(raw, dtype=np.int16).astype(np.float32)
+    if pcm.size == 0:
+        return False
+    pcm_norm = pcm / 32768.0
+    rms = float(np.sqrt(np.mean(pcm_norm ** 2)))
+    peak = float(np.max(np.abs(pcm_norm)))
+    active_ratio = float(np.mean(np.abs(pcm_norm) > 0.02))
+    return rms > 0.008 and peak > 0.05 and active_ratio > 0.02
+
+
+def describe_audio_source(device) -> str:
+    name = (getattr(device, "name", "") or "").strip()
+    conn = (getattr(device, "connection_string", "") or "").strip()
+    if not conn:
+        return name or "Неизвестный источник"
+    conn_l = conn.lower()
+    mode = "ALSA"
+    if conn_l.startswith("plughw:"):
+        mode = "plug"
+    elif conn_l.startswith("hw:"):
+        mode = "hw"
+    card_match = re.search(r"card=([^,]+)", conn, flags=re.IGNORECASE)
+    dev_match = re.search(r"dev=([^,]+)", conn, flags=re.IGNORECASE)
+    card = card_match.group(1) if card_match else "?"
+    dev = dev_match.group(1) if dev_match else "?"
+    title = name or f"Mic {card}/{dev}"
+    return f"{title} [{mode}, card={card}, dev={dev}]"
+
+
+def normalize_audio_pcm(raw: bytes) -> bytes:
+    if not raw:
+        return b""
+    pcm = np.frombuffer(raw, dtype=np.int16).astype(np.float32)
+    if pcm.size == 0:
+        return b""
+    pcm -= float(np.mean(pcm))
+    rms = float(np.sqrt(np.mean((pcm / 32768.0) ** 2)))
+    # Не усиливаем почти тишину/фоновый шум, чтобы не маскировать отсутствие речи.
+    if rms < 0.004:
+        return raw
+    peak = float(np.max(np.abs(pcm))) if pcm.size else 0.0
+    if peak < 1.0:
+        return raw
+    target_peak = 24000.0
+    gain = min(8.0, target_peak / peak)
+    pcm = np.clip(pcm * gain, -32768.0, 32767.0).astype(np.int16)
+    return pcm.tobytes()
 
 
 def parse_kv_env_file(path: Path) -> dict:
@@ -251,6 +334,14 @@ class BiometryClient:
             biometry_pb2.RegisterUserRequest(name=name, images=images, voices=voices)
         )
 
+    def validate_voice_sample(self, voice_bytes, sample_rate=16000):
+        if not voice_bytes:
+            raise ValueError("voice sample is empty")
+        return self.audio_stub.ProcessVoice(
+            biometry_pb2.AudioChunk(content=bytes(voice_bytes), sample_rate=int(sample_rate)),
+            timeout=6.0,
+        )
+
     def remove_user(self, user_id):
         return self.stub.RemoveUser(biometry_pb2.IdRequest(id=user_id))
 
@@ -279,14 +370,10 @@ class BiometryClient:
         req_fields = getattr(message_cls, "DESCRIPTOR", None)
         return req_fields.fields_by_name if req_fields else {}
 
-    def set_access_rules(self, user_id, room_ids, zone_ids=None):
-        if zone_ids is None:
-            zone_ids = []
-        field_map = self._message_field_map(biometry_pb2.SetAccessRulesRequest)
-        kwargs = {"user_id": user_id, "allowed_room_ids": room_ids}
-        if "allowed_zone_ids" in field_map:
-            kwargs["allowed_zone_ids"] = zone_ids
-        return self.stub.SetAccessRules(biometry_pb2.SetAccessRulesRequest(**kwargs))
+    def set_access_rules(self, user_id, room_ids):
+        return self.stub.SetAccessRules(
+            biometry_pb2.SetAccessRulesRequest(user_id=user_id, allowed_room_ids=room_ids)
+        )
 
     def get_user_access(self, user_id):
         return self.stub.GetUserAccess(biometry_pb2.IdRequest(id=user_id))
@@ -449,6 +536,7 @@ class SystemTab(QWidget):
         runtime_file = Path(__file__).resolve().parents[1] / ".server_runtime.env"
         runtime_cfg = parse_kv_env_file(runtime_file)
 
+        requested_mode = runtime_cfg.get("RUNTIME_MODE", "auto").upper()
         vision_threads = runtime_cfg.get("VISION_INTRA_THREADS", "-")
         audio_threads = runtime_cfg.get("AUDIO_INTRA_THREADS", "-")
         vision_cpu = runtime_cfg.get("VISION_FORCE_CPU", "?")
@@ -457,14 +545,15 @@ class SystemTab(QWidget):
 
         vision_device = status.vision.device or "неизвестно"
         audio_device = status.audio.device or "неизвестно"
-        mode = (
+        actual_mode = (
             "GPU"
-            if ("CUDA" in vision_device.upper() or "CUDA" in audio_device.upper() or audio_cuda == "1")
+            if ("CUDA" in vision_device.upper() or "CUDA" in audio_device.upper())
             else "CPU"
         )
 
         self.lbl_runtime_info.setText(
-            f"Выбранный режим: {mode}\n"
+            f"Запрошенный режим: {requested_mode}\n"
+            f"Фактический режим: {actual_mode}\n"
             f"Модуль видео (Vision): устройство={vision_device}, потоки ONNX={vision_threads}, FORCE_CPU={vision_cpu}\n"
             f"Модуль аудио (Audio): устройство={audio_device}, потоки ONNX={audio_threads}, FORCE_CPU={audio_cpu}, USE_CUDA={audio_cuda}\n"
             f"Статус Vision: {status.vision.message}\n"
@@ -559,92 +648,193 @@ class RegistrationCameraDialog(QDialog):
         self.current_audio = b""
         self.required_shots = 5
         self.captured_images = []
-        self.required_voice_samples = 2
+        self.required_voice_samples = 3
         self.captured_voices = []
         self.stream_thread = None
+        self.audio_record_thread = None
         self.camera_devices = []
+        self.all_devices = []
         self.selected_device_id = None
+        self.voice_recording = False
+        self.voice_record_start_cursor = 0
+        self.registration_face_detector = cv2.CascadeClassifier(
+            cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+        )
 
         layout = QVBoxLayout(self)
         self.name_input = QLineEdit()
         self.name_input.setPlaceholderText("ФИО сотрудника")
         layout.addWidget(self.name_input)
-        self.camera_combo = QComboBox()
-        layout.addWidget(self.camera_combo)
+        self.camera_label = QLabel("")
+        layout.addWidget(self.camera_label)
+        self.microphone_label = QLabel("")
+        layout.addWidget(self.microphone_label)
         self.progress_label = QLabel(f"Снимки: 0/{self.required_shots}. Сделайте 5 фото под разными ракурсами.")
         layout.addWidget(self.progress_label)
         self.voice_progress_label = QLabel(
-            f"Голос: 0/{self.required_voice_samples}. Запишите короткую фразу для биометрии."
+            f"Голос: 0/{self.required_voice_samples}. Произнесите фразу: «{REGISTRATION_VOICE_PHRASE}»"
         )
         layout.addWidget(self.voice_progress_label)
+        self.face_quality_label = QLabel("Качество лица: --%")
+        self.face_quality_label.setWordWrap(True)
+        layout.addWidget(self.face_quality_label)
 
         self.video_label = QLabel("Подключение камеры...")
         self.video_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.video_label.setMinimumSize(760, 480)
         self.video_label.setStyleSheet("background:#111;border:1px solid #444;")
         layout.addWidget(self.video_label)
+        self.stream_status_label = QLabel("")
+        self.stream_status_label.setWordWrap(True)
+        self.stream_status_label.setStyleSheet("color:#8a1f1f;")
+        layout.addWidget(self.stream_status_label)
 
         btns = QHBoxLayout()
         self.btn_capture = QPushButton(f"📸 Сделать снимок (1/{self.required_shots})")
-        self.btn_capture.clicked.connect(self.register_user)
+        self.btn_capture.clicked.connect(self.capture_photo)
         self.btn_record_voice = QPushButton(f"🎤 Записать голос (1/{self.required_voice_samples})")
         self.btn_record_voice.clicked.connect(self.capture_voice_sample)
+        self.btn_save_user = QPushButton("💾 Сохранить пользователя")
+        self.btn_save_user.clicked.connect(self.register_user)
+        self.btn_save_user.setEnabled(False)
         btns.addStretch()
         btns.addWidget(self.btn_record_voice)
         btns.addWidget(self.btn_capture)
+        btns.addWidget(self.btn_save_user)
         btns.addStretch()
         layout.addLayout(btns)
         self.reload_cameras()
 
     def reload_cameras(self):
-        self.camera_devices = [d for d in self.client.list_devices() if d.device_type == "camera"]
-        self.camera_combo.clear()
-        for d in self.camera_devices:
-            self.camera_combo.addItem(f"{d.name} (id={d.id})", d.id)
-        self.camera_combo.currentIndexChanged.connect(self.on_camera_changed)
+        self.all_devices = list(self.client.list_devices())
+        self.camera_devices = [d for d in self.all_devices if d.device_type == "camera"]
         if self.camera_devices:
-            self.on_camera_changed(0)
+            self.selected_device_id = int(self.camera_devices[0].id)
+            self.camera_label.setText(f"Камера: {self.camera_devices[0].name}")
+            self.start_stream_for_selected()
         else:
+            self.camera_label.setText("Камера: не найдена")
             self.video_label.setText("Нет камер в инфраструктуре")
             self.btn_capture.setEnabled(False)
             self.btn_record_voice.setEnabled(False)
-
-    def on_camera_changed(self, index):
-        if index < 0 or index >= len(self.camera_devices):
-            return
-        self.selected_device_id = int(self.camera_combo.itemData(index))
-        self.start_stream_for_selected()
+            self.btn_save_user.setEnabled(False)
 
     def start_stream_for_selected(self):
         self.stop_stream()
         if self.selected_device_id is None:
             return
-        self.stream_thread = VideoThread(self.client, self.selected_device_id, target_fps=7, include_audio=True)
+        self.stream_status_label.clear()
+        camera = self._selected_camera()
+        if camera is None:
+            return
+        self.stream_thread = LocalCameraThread(camera.connection_string, target_fps=15)
         self.stream_thread.frame_ready.connect(self._on_frame)
-        self.stream_thread.status_msg.connect(lambda msg: self.video_label.setText(msg))
+        self.stream_thread.status_msg.connect(self._on_stream_status)
         self.stream_thread.start()
+        self._update_voice_controls()
 
     def stop_stream(self):
+        if self.audio_record_thread:
+            self.audio_record_thread.stop()
+            self.audio_record_thread.wait()
+            self.audio_record_thread = None
         if self.stream_thread:
             self.stream_thread.stop()
             self.stream_thread.wait()
             self.stream_thread = None
+        self.current_frame = None
+        self.current_audio = b""
+        self.voice_recording = False
+        self.voice_record_start_cursor = 0
 
-    def _on_frame(self, img):
-        if self.stream_thread is not None:
-            self.current_frame = self.stream_thread.get_frame_copy()
-            self.current_audio = self.stream_thread.get_audio_copy() or b""
-        self.video_label.setPixmap(QPixmap.fromImage(img).scaled(
-            self.video_label.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation
-        ))
+    def _shutdown_dialog_media(self):
+        self.btn_capture.setEnabled(False)
+        self.btn_record_voice.setEnabled(False)
+        self.btn_save_user.setEnabled(False)
+        self.stop_stream()
 
-    def register_user(self):
-        name = self.name_input.text().strip()
-        if not name:
-            QMessageBox.warning(self, "Проверка", "Введите имя пользователя")
+    def _on_stream_status(self, msg):
+        if msg:
+            self.stream_status_label.setText(msg)
+            if self.current_frame is None:
+                self.video_label.setText(msg)
+
+    def _selected_camera(self):
+        for device in self.camera_devices:
+            if device.id == self.selected_device_id:
+                return device
+        return None
+
+    def _has_microphone_for_selected_camera(self):
+        return self._selected_microphone() is not None
+
+    def _selected_microphone(self):
+        camera = self._selected_camera()
+        if camera is None:
+            return None
+        for device in self.all_devices:
+            if device.device_type == "microphone" and device.room_id == camera.room_id:
+                return device
+        return None
+
+    def _update_voice_controls(self):
+        if self.voice_recording:
+            self.btn_record_voice.setEnabled(False)
+            self._update_save_button()
             return
+        if not self._has_microphone_for_selected_camera():
+            self.btn_record_voice.setEnabled(False)
+            self.microphone_label.setText("Микрофон: не выбран")
+            self.voice_progress_label.setText(
+                "Голос: микрофон не привязан к этой комнате. Для голосовой регистрации нужна камера и микрофон в одной комнате."
+            )
+            self.btn_record_voice.setText("🎤 Нет микрофона")
+            self._update_save_button()
+            return
+        mic = self._selected_microphone()
+        if mic is not None:
+            self.microphone_label.setText(f"Микрофон: {describe_audio_source(mic)}")
+        captured = len(self.captured_voices)
+        self.voice_progress_label.setText(
+            f"Голос: {captured}/{self.required_voice_samples}. Произнесите: «{REGISTRATION_VOICE_PHRASE}» ({VOICE_RECORD_MS / 1000:.1f} сек)."
+        )
+        if captured < self.required_voice_samples:
+            self.btn_record_voice.setEnabled(True)
+            self.btn_record_voice.setText(f"🎤 Записать голос ({captured + 1}/{self.required_voice_samples})")
+        else:
+            self.btn_record_voice.setEnabled(False)
+            self.btn_record_voice.setText("🎤 Голос записан")
+        self._update_save_button()
+
+    def _update_save_button(self):
+        ready = (
+            self.current_frame is not None
+            and len(self.captured_images) >= self.required_shots
+            and len(self.captured_voices) >= self.required_voice_samples
+            and not self.voice_recording
+        )
+        self.btn_save_user.setEnabled(ready)
+
+    def capture_photo(self):
+        valid, normalized_name, error = validate_person_name(self.name_input.text())
+        if not valid:
+            QMessageBox.warning(self, "Проверка", error)
+            return
+        existing_names = {normalize_person_name(u.name).casefold() for u in self.client.list_users()}
+        if normalized_name.casefold() in existing_names:
+            QMessageBox.warning(self, "Проверка", "Пользователь с таким ФИО уже есть в базе")
+            return
+        self.name_input.setText(normalized_name)
         if self.current_frame is None:
             QMessageBox.warning(self, "Проверка", "Ожидаем кадр с камеры")
+            return
+        face_ok, face_msg = self._validate_registration_frame(self.current_frame)
+        if not face_ok:
+            QMessageBox.warning(self, "Проверка", face_msg)
+            return
+        if len(self.captured_images) >= self.required_shots:
+            self._update_save_button()
+            QMessageBox.information(self, "Готово", "Серия снимков уже собрана. Нажмите «Сохранить пользователя».")
             return
         ok, enc = cv2.imencode('.jpg', self.current_frame)
         if not ok:
@@ -659,6 +849,151 @@ class RegistrationCameraDialog(QDialog):
             self.btn_capture.setText(
                 f"📸 Сделать снимок ({captured + 1}/{self.required_shots})"
             )
+        else:
+            self.btn_capture.setText("📸 Снимки собраны")
+            self.btn_capture.setEnabled(False)
+        self._update_save_button()
+
+    def _validate_registration_frame(self, frame):
+        quality = self._compute_registration_quality(frame)
+        if quality["ok"]:
+            return True, ""
+        return False, quality["reason"]
+
+    @staticmethod
+    def _score_metric(value: float, min_value: float, good_value: float) -> float:
+        if good_value <= min_value:
+            return 0.0
+        return float(np.clip((value - min_value) / (good_value - min_value), 0.0, 1.0))
+
+    def _compute_registration_quality(self, frame):
+        min_blur = 0.0007
+        good_blur = 0.0024
+        if frame is None:
+            return {
+                "ok": False,
+                "reason": "Нет кадра с камеры",
+                "quality_percent": 0,
+                "face_score": 0.0,
+                "light_score": 0.0,
+                "sharp_score": 0.0,
+            }
+
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        frame_h, frame_w = gray.shape[:2]
+        min_side = max(72, int(min(frame_w, frame_h) * 0.16))
+        faces = self.registration_face_detector.detectMultiScale(
+            gray,
+            scaleFactor=1.06,
+            minNeighbors=5,
+            minSize=(min_side, min_side),
+        )
+        if len(faces) == 0:
+            return {
+                "ok": False,
+                "reason": "Лицо не найдено. Подойдите ближе к камере и держите лицо прямо.",
+                "quality_percent": 0,
+                "face_score": 0.0,
+                "light_score": 0.0,
+                "sharp_score": 0.0,
+            }
+
+        x, y, w, h = max(faces, key=lambda b: b[2] * b[3])
+        area_ratio = (w * h) / max(float(frame_w * frame_h), 1.0)
+        face_score = self._score_metric(area_ratio, 0.06, 0.16)
+        if area_ratio < 0.06 or min(w, h) < 96:
+            return {
+                "ok": False,
+                "reason": "Лицо слишком далеко. Подойдите ближе и заполните кадр лицом.",
+                "quality_percent": int(round(face_score * 100.0 * 0.35)),
+                "face_score": face_score,
+                "light_score": 0.0,
+                "sharp_score": 0.0,
+            }
+
+        roi = frame[max(0, y): y + h, max(0, x): x + w]
+        if roi.size == 0:
+            return {
+                "ok": False,
+                "reason": "Не удалось выделить лицо. Повторите снимок.",
+                "quality_percent": 0,
+                "face_score": 0.0,
+                "light_score": 0.0,
+                "sharp_score": 0.0,
+            }
+
+        roi_gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+        luma = float(np.mean(roi_gray)) / 255.0
+        light_score = self._score_metric(luma, 0.16, 0.32)
+        if luma < 0.16:
+            quality = int(round((0.35 * face_score + 0.25 * light_score) * 100.0))
+            return {
+                "ok": False,
+                "reason": "Слишком темно. Добавьте свет на лицо и повторите снимок.",
+                "quality_percent": quality,
+                "face_score": face_score,
+                "light_score": light_score,
+                "sharp_score": 0.0,
+            }
+
+        # Проверяем центральную часть лица: края/фон часто занижают резкость на нормальном кадре.
+        ih, iw = roi_gray.shape[:2]
+        pad_x = max(0, int(iw * 0.18))
+        pad_y = max(0, int(ih * 0.18))
+        focus_roi = roi_gray[pad_y: max(pad_y + 1, ih - pad_y), pad_x: max(pad_x + 1, iw - pad_x)]
+        lap = cv2.Laplacian(focus_roi, cv2.CV_32F)
+        sharpness = float(np.var(lap)) / (255.0 * 255.0)
+        sharp_score = self._score_metric(sharpness, min_blur, good_blur)
+        quality = int(round((0.35 * face_score + 0.25 * light_score + 0.40 * sharp_score) * 100.0))
+
+        if sharpness < min_blur:
+            return {
+                "ok": False,
+                "reason": "Кадр смазан. Зафиксируйте камеру и лицо, затем повторите снимок.",
+                "quality_percent": min(quality, 59),
+                "face_score": face_score,
+                "light_score": light_score,
+                "sharp_score": sharp_score,
+            }
+
+        return {
+            "ok": True,
+            "reason": "",
+            "quality_percent": quality,
+            "face_score": face_score,
+            "light_score": light_score,
+            "sharp_score": sharp_score,
+        }
+
+    def _on_frame(self, img):
+        if self.stream_thread is not None:
+            self.current_frame = self.stream_thread.get_frame_copy()
+            self.current_audio = self.stream_thread.get_audio_copy() or b""
+        quality = self._compute_registration_quality(self.current_frame)
+        self.face_quality_label.setText(
+            f"Качество лица: {quality['quality_percent']}%"
+        )
+        self._update_save_button()
+        self.video_label.setPixmap(QPixmap.fromImage(img).scaled(
+            self.video_label.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation
+        ))
+
+    def register_user(self):
+        valid, normalized_name, error = validate_person_name(self.name_input.text())
+        if not valid:
+            QMessageBox.warning(self, "Проверка", error)
+            return
+        existing_names = {normalize_person_name(u.name).casefold() for u in self.client.list_users()}
+        if normalized_name.casefold() in existing_names:
+            QMessageBox.warning(self, "Проверка", "Пользователь с таким ФИО уже есть в базе")
+            return
+        self.name_input.setText(normalized_name)
+        if len(self.captured_images) < self.required_shots:
+            QMessageBox.warning(
+                self,
+                "Проверка",
+                f"Сделайте снимки: {len(self.captured_images)}/{self.required_shots}",
+            )
             return
         if len(self.captured_voices) < self.required_voice_samples:
             QMessageBox.warning(
@@ -669,7 +1004,7 @@ class RegistrationCameraDialog(QDialog):
             return
 
         try:
-            self.client.register_user(name, self.captured_images, self.captured_voices)
+            self.client.register_user(normalized_name, self.captured_images, self.captured_voices)
         except Exception as e:
             QMessageBox.critical(self, "Ошибка регистрации", str(e))
             self.captured_images.clear()
@@ -677,13 +1012,10 @@ class RegistrationCameraDialog(QDialog):
             self.progress_label.setText(
                 f"Снимки: 0/{self.required_shots}. Сделайте 5 фото под разными ракурсами."
             )
-            self.voice_progress_label.setText(
-                f"Голос: 0/{self.required_voice_samples}. Запишите короткую фразу для биометрии."
-            )
             self.btn_capture.setText(f"📸 Сделать снимок (1/{self.required_shots})")
-            self.btn_record_voice.setText(
-                f"🎤 Записать голос (1/{self.required_voice_samples})"
-            )
+            self.btn_capture.setEnabled(True)
+            self._update_voice_controls()
+            self._update_save_button()
             return
 
         QMessageBox.information(
@@ -691,28 +1023,87 @@ class RegistrationCameraDialog(QDialog):
             "Готово",
             f"Пользователь зарегистрирован. Снимков: {self.required_shots}, голосовых примеров: {self.required_voice_samples}",
         )
-        self.accept()
+        self._shutdown_dialog_media()
+        super().accept()
 
     def capture_voice_sample(self):
-        raw = self.current_audio
-        if not raw:
-            QMessageBox.warning(self, "Проверка", "Нет аудио из серверного потока камеры/микрофона")
+        if self.voice_recording:
+            return
+        if self.stream_thread is None:
+            QMessageBox.warning(self, "Проверка", "Нет активного медиапотока")
+            return
+        if len(self.captured_voices) >= self.required_voice_samples:
+            self._update_voice_controls()
+            return
+        microphone = self._selected_microphone()
+        if microphone is None:
+            QMessageBox.warning(
+                self,
+                "Проверка",
+                "Для записи голоса нужен микрофон, привязанный к той же комнате, что и выбранная камера.",
+            )
+            return
+        self.voice_progress_label.setText(
+            f"Голос: {len(self.captured_voices)}/{self.required_voice_samples}. Идёт запись {VOICE_RECORD_MS / 1000:.1f} сек, произнесите: «{REGISTRATION_VOICE_PHRASE}»"
+        )
+        self.voice_recording = True
+        self.btn_record_voice.setText("🎤 Идёт запись...")
+        self.btn_record_voice.setEnabled(False)
+        self.audio_record_thread = AudioRecordThread(microphone.connection_string, VOICE_RECORD_MS, VOICE_SAMPLE_RATE)
+        self.audio_record_thread.recorded.connect(self._finish_voice_sample_capture)
+        self.audio_record_thread.failed.connect(self._on_voice_capture_failed)
+        self.audio_record_thread.finished.connect(self._clear_audio_record_thread)
+        self.audio_record_thread.start()
+
+    def _clear_audio_record_thread(self):
+        self.audio_record_thread = None
+
+    def _on_voice_capture_failed(self, message):
+        self.voice_recording = False
+        QMessageBox.warning(self, "Проверка", message)
+        self._update_voice_controls()
+
+    def _finish_voice_sample_capture(self, raw):
+        self.voice_recording = False
+        raw = normalize_audio_pcm(raw)
+        min_bytes = int(VOICE_SAMPLE_RATE * 2 * (VOICE_RECORD_MS / 1000.0) * 0.6)
+        if len(raw) < min_bytes:
+            QMessageBox.warning(
+                self,
+                "Проверка",
+                "Не удалось набрать достаточный аудиофрагмент. Проверьте микрофон и повторите запись.",
+            )
+            self._update_voice_controls()
+            return
+        if not audio_has_voice(raw):
+            QMessageBox.warning(
+                self,
+                "Проверка",
+                "Голос не обнаружен. Нажмите запись и произнесите фразу обычным голосом.",
+            )
+            self._update_voice_controls()
+            return
+        try:
+            result = self.client.validate_voice_sample(raw, sample_rate=VOICE_SAMPLE_RATE)
+        except Exception as e:
+            QMessageBox.warning(self, "Проверка", f"Не удалось проверить голосовой пример: {e}")
+            self._update_voice_controls()
+            return
+        if not getattr(result, "detected", False) or not getattr(result, "embedding", []):
+            reason = getattr(result, "error_msg", "") or "audio-worker не смог построить голосовой эмбеддинг"
+            QMessageBox.warning(self, "Проверка", f"Голосовой пример отклонён: {reason}")
+            self._update_voice_controls()
             return
         self.captured_voices.append(raw)
-        captured = len(self.captured_voices)
-        self.voice_progress_label.setText(
-            f"Голос: {captured}/{self.required_voice_samples}. Говорите естественно."
-        )
-        if captured < self.required_voice_samples:
-            self.btn_record_voice.setText(
-                f"🎤 Записать голос ({captured + 1}/{self.required_voice_samples})"
-            )
-        else:
-            self.btn_record_voice.setText("🎤 Голос записан")
+        self._update_voice_controls()
 
     def closeEvent(self, event):
-        self.stop_stream()
+        self._shutdown_dialog_media()
         super().closeEvent(event)
+
+    def reject(self):
+        self._shutdown_dialog_media()
+        super().reject()
 
 
 class PersonnelAccessTab(QWidget):
@@ -1017,7 +1408,10 @@ class InfrastructureTab(QWidget):
             ce.setEnabled(True)
             detected = self._get_detected_hardware(dtype)
             for dev in detected:
-                label = f"{dev.name} | {dev.connection_string}"
+                if dtype == "microphone":
+                    label = f"{describe_audio_source(dev)} | {dev.connection_string}"
+                else:
+                    label = f"{dev.name} | {dev.connection_string}"
                 source_box.addItem(label, dev.connection_string)
             source_box.addItem("Ввести вручную…", "__manual__")
             if source_box.count() > 0 and source_box.itemData(0) != "__manual__":
@@ -1337,8 +1731,8 @@ class MonitoringTab(QWidget):
         self.presence_required_hits = 2
         self.presence_clear_required_misses = 4
         self.presence_clear_log_after_s = 1.8
-        self.presence_to_ident_delay_s = 0.35
-        self.ident_cooldown_s = 2.5
+        self.presence_to_ident_delay_s = 0.12
+        self.ident_cooldown_s = 0.80
         self.door_sessions = {}
         self.presence_hits = {}
         self.presence_miss_hits = {}
@@ -1354,6 +1748,7 @@ class MonitoringTab(QWidget):
         self.selected_zone_name = None
         self.point_log_seen = set()
         self.server_visible_cameras = set()
+        self.last_tree_refresh_ts = 0.0
         self.setup_ui()
         self.apply_user_preferences(self.ui_settings)
 
@@ -1485,14 +1880,34 @@ class MonitoringTab(QWidget):
         raw = (msg or "").strip()
         if not raw:
             return None, None, 0.0
+        if raw == "door_agent_preview":
+            return None, None, 0.0
         # Частая и ожидаемая ситуация при остановке/переподключении: не спамим в лог.
         if "Locally cancelled by application" in raw:
             return None, None, 0.0
         if "Device or resource busy" in raw or "resource busy" in raw:
             return (
-                "Камера занята другим процессом. Закройте сторонние приложения, которые используют это устройство.",
+                "Камера занята другим процессом на сервере. Для этой точки прохода это обычно означает, что источник уже использует идентификация.",
                 "camera_busy",
                 8.0,
+            )
+        if "video_capture_error:camera device busy" in raw:
+            return (
+                "Поток мониторинга не открыт: камера уже занята серверным пайплайном идентификации.",
+                "camera_busy",
+                8.0,
+            )
+        if "door-agent preview unavailable: preview frame not available" in raw:
+            return (
+                "Поток мониторинга еще не готов: серверный preview-кадр пока не появился.",
+                "camera_preview_pending",
+                3.0,
+            )
+        if "door-agent preview unavailable: preview frame is stale" in raw:
+            return (
+                "Поток мониторинга временно не обновляется: серверный preview-кадр устарел.",
+                "camera_preview_stale",
+                3.0,
             )
         if raw.startswith("video_capture_error:"):
             short = raw.split("\n", 1)[0].replace("video_capture_error:", "").strip()
@@ -1608,15 +2023,10 @@ class MonitoringTab(QWidget):
 
     @staticmethod
     def detect_voice_presence(raw):
-        if not raw:
-            return False, None
-        pcm = np.frombuffer(raw, dtype=np.int16).astype(np.float32)
-        if pcm.size == 0:
-            return False, None
-        rms = float(np.sqrt(np.mean((pcm / 32768.0) ** 2)))
-        return rms > 0.008, raw
+        return audio_has_voice(raw), raw if raw else None
 
     def refresh_tree(self):
+        self.last_tree_refresh_ts = time.time()
         prev_selected = self.selected_device_id
         self.tree.clear()
         self.camera_items = []
@@ -1711,7 +2121,7 @@ class MonitoringTab(QWidget):
                 f"Источник камеры недоступен на сервере: {conn}\nОбновите инфраструктуру/сканирование."
             )
             return
-        t = VideoThread(self.client, dev.id, target_fps=5, include_audio=False)
+        t = VideoThread(self.client, dev.id, target_fps=10, include_audio=False)
         t.frame_ready.connect(lambda img, d=dev.id: self._show_frame_for_device(d, img))
         t.status_msg.connect(lambda msg, d=dev.id: self._handle_camera_status(d, msg))
         t.start()
@@ -1757,8 +2167,14 @@ class MonitoringTab(QWidget):
             self.monitoring_enabled = True
             if self.pipeline_running:
                 if not self.log_timer.isActive():
-                    self.log_timer.start(250)
-                self.refresh_tree()
+                    self.log_timer.start(750)
+                if (time.time() - self.last_tree_refresh_ts) > 5.0 or not self.camera_items:
+                    self.refresh_tree()
+                elif self.selected_device_id is not None and self.selected_device_id not in self.active_cameras:
+                    for _item, dev in self.camera_items:
+                        if dev.id == self.selected_device_id:
+                            self.start_camera_stream(dev)
+                            break
             else:
                 self.stop_all_videos()
                 self._refresh_live_banner()
@@ -1930,6 +2346,11 @@ class VideoThread(QThread):
         self.mutex = QMutex()
         self.current_frame = None
         self.current_audio = b""
+        self.current_audio_sample_rate = VOICE_SAMPLE_RATE
+        self.audio_ring = bytearray()
+        self.audio_total_bytes = 0
+        self.max_audio_buffer_ms = 8000
+        self._last_audio_chunk = b""
         self._stream_call = None
 
     def run(self):
@@ -1965,7 +2386,21 @@ class VideoThread(QThread):
 
                 self.mutex.lock()
                 self.current_frame = frame.copy()
-                self.current_audio = bytes(getattr(chunk, "audio", b"") or b"")
+                audio_chunk = bytes(getattr(chunk, "audio", b"") or b"")
+                sample_rate = int(getattr(chunk, "audio_sample_rate", 0) or 0)
+                self.current_audio = audio_chunk
+                if sample_rate > 0:
+                    self.current_audio_sample_rate = sample_rate
+                if audio_chunk and audio_chunk != self._last_audio_chunk:
+                    self.audio_ring.extend(audio_chunk)
+                    self.audio_total_bytes += len(audio_chunk)
+                    max_bytes = max(
+                        self.current_audio_sample_rate * 2,
+                        int(self.current_audio_sample_rate * 2 * (self.max_audio_buffer_ms / 1000.0)),
+                    )
+                    if len(self.audio_ring) > max_bytes:
+                        del self.audio_ring[:-max_bytes]
+                    self._last_audio_chunk = audio_chunk
                 self.mutex.unlock()
 
                 if self.overlay[2] > 0:
@@ -2030,6 +2465,217 @@ class VideoThread(QThread):
         a = bytes(self.current_audio) if self.current_audio else b""
         self.mutex.unlock()
         return a
+
+    def get_audio_cursor(self):
+        self.mutex.lock()
+        cursor = self.audio_total_bytes
+        self.mutex.unlock()
+        return cursor
+
+    def get_audio_since(self, cursor):
+        self.mutex.lock()
+        total_bytes = self.audio_total_bytes
+        available_bytes = len(self.audio_ring)
+        available_start = max(0, total_bytes - available_bytes)
+        start = max(cursor, available_start) - available_start
+        data = bytes(self.audio_ring[start:]) if start < available_bytes else b""
+        self.mutex.unlock()
+        return data
+
+
+class LocalCameraThread(QThread):
+    frame_ready = pyqtSignal(QImage)
+    status_msg = pyqtSignal(str)
+
+    def __init__(self, connection_string, target_fps=15):
+        super().__init__()
+        self.connection_string = connection_string
+        self.target_fps = max(5, int(target_fps))
+        self.running = True
+        self.mutex = QMutex()
+        self.current_frame = None
+        self._proc = None
+
+    @staticmethod
+    def _camera_source(connection_string):
+        conn = (connection_string or "").strip()
+        if conn.isdigit():
+            return f"/dev/video{conn}"
+        if conn.startswith("/dev/video"):
+            return conn
+        return conn
+
+    def _ffmpeg_command(self, source):
+        fps = max(5, int(self.target_fps))
+        safe_source = str(source).replace("'", "")
+        if str(source).startswith("/dev/video"):
+            return [
+                "bash",
+                "-lc",
+                (
+                    f"ffmpeg -loglevel error -fflags nobuffer -flags low_delay "
+                    f"-f v4l2 -framerate {fps} -i '{safe_source}' "
+                    f"-vf fps={fps} -f image2pipe -vcodec mjpeg -q:v 5 -"
+                ),
+            ]
+        return [
+            "bash",
+            "-lc",
+            (
+                f"ffmpeg -loglevel error -fflags nobuffer -flags low_delay "
+                f"-i '{safe_source}' -vf fps={fps} -f image2pipe -vcodec mjpeg -q:v 5 -"
+            ),
+        ]
+
+    def run(self):
+        source = self._camera_source(self.connection_string)
+        cmd = self._ffmpeg_command(source)
+        try:
+            self._proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                bufsize=0,
+            )
+        except Exception as e:
+            self.status_msg.emit(f"Не удалось открыть локальную камеру: {e}")
+            return
+        if self._proc.stdout is None:
+            self.status_msg.emit("Не удалось открыть stdout видеопотока")
+            return
+        buffer = bytearray()
+        try:
+            while self.running:
+                chunk = self._proc.stdout.read(4096)
+                if not chunk:
+                    if self._proc.poll() is not None:
+                        err = b""
+                        if self._proc.stderr is not None:
+                            try:
+                                err = self._proc.stderr.read() or b""
+                            except Exception:
+                                err = b""
+                        msg = err.decode("utf-8", errors="ignore").strip() or "ffmpeg завершил видеопоток"
+                        self.status_msg.emit(msg)
+                        break
+                    self.msleep(20)
+                    continue
+                buffer.extend(chunk)
+                while True:
+                    start = buffer.find(b"\xff\xd8")
+                    if start < 0:
+                        if len(buffer) > 1_000_000:
+                            del buffer[:-4096]
+                        break
+                    end = buffer.find(b"\xff\xd9", start + 2)
+                    if end < 0:
+                        if start > 0:
+                            del buffer[:start]
+                        break
+                    jpeg_bytes = bytes(buffer[start:end + 2])
+                    del buffer[:end + 2]
+                    frame_np = np.frombuffer(jpeg_bytes, dtype=np.uint8)
+                    frame = cv2.imdecode(frame_np, cv2.IMREAD_COLOR)
+                    if frame is None:
+                        continue
+                    self.mutex.lock()
+                    self.current_frame = frame.copy()
+                    self.mutex.unlock()
+                    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    h, w, ch = rgb.shape
+                    img = QImage(rgb.data, w, h, ch * w, QImage.Format.Format_RGB888).copy()
+                    self.frame_ready.emit(img)
+        finally:
+            if self._proc is not None:
+                try:
+                    self._proc.terminate()
+                    self._proc.wait(timeout=1.5)
+                except Exception:
+                    try:
+                        self._proc.kill()
+                    except Exception:
+                        pass
+                self._proc = None
+
+    def stop(self):
+        self.running = False
+        if self._proc is not None:
+            try:
+                self._proc.terminate()
+            except Exception:
+                pass
+
+    def get_frame_copy(self):
+        self.mutex.lock()
+        f = self.current_frame.copy() if self.current_frame is not None else None
+        self.mutex.unlock()
+        return f
+
+    def get_audio_copy(self):
+        return b""
+
+
+class AudioRecordThread(QThread):
+    recorded = pyqtSignal(bytes)
+    failed = pyqtSignal(str)
+
+    def __init__(self, connection_string, duration_ms, sample_rate):
+        super().__init__()
+        self.connection_string = connection_string
+        self.duration_ms = max(500, int(duration_ms))
+        self.sample_rate = max(8000, int(sample_rate))
+        self._proc = None
+        self._stopped = False
+
+    def run(self):
+        seconds = self.duration_ms / 1000.0
+        conn = self.connection_string.replace("'", "")
+        last_error = ""
+        for channels in (1, 2):
+            byte_count = int(self.sample_rate * 2 * channels * seconds)
+            cmd = [
+                "bash",
+                "-lc",
+                (
+                    f"arecord -q -D '{conn}' "
+                    f"-r {self.sample_rate} -c {channels} -f S16_LE -t raw - | head -c {byte_count}"
+                ),
+            ]
+            try:
+                self._proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                stdout, stderr = self._proc.communicate(timeout=seconds + 2.0)
+            except subprocess.TimeoutExpired:
+                if self._proc is not None:
+                    self._proc.kill()
+                self.failed.emit("Таймаут записи с микрофона")
+                return
+            except Exception as e:
+                self.failed.emit(f"Не удалось запустить запись с микрофона: {e}")
+                return
+            finally:
+                self._proc = None
+            if self._stopped:
+                return
+            if not stdout:
+                last_error = (stderr or b"").decode("utf-8", errors="ignore").strip()
+                continue
+            raw = bytes(stdout)
+            if channels == 2:
+                pcm = np.frombuffer(raw, dtype=np.int16)
+                if pcm.size >= 2:
+                    pcm = pcm.reshape(-1, 2).mean(axis=1).astype(np.int16)
+                    raw = pcm.tobytes()
+            self.recorded.emit(raw)
+            return
+        self.failed.emit(last_error or "Микрофон не вернул аудио")
+
+    def stop(self):
+        self._stopped = True
+        if self._proc is not None:
+            try:
+                self._proc.kill()
+            except Exception:
+                pass
 
 
 class AdminApp(QMainWindow):

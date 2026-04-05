@@ -45,6 +45,7 @@ service Gatekeeper {
 service DoorAgent {
   rpc SubmitObservation (DoorObservationRequest) returns (DoorObservationResponse);
   rpc GetDoorAgentStatus (Empty) returns (DoorAgentStatusResponse);
+  rpc GetLatestPreviewFrame (IdRequest) returns (DeviceMediaChunk);
 }
 
 service Vision {
@@ -156,12 +157,10 @@ message GrantAccessRequest {
 message SetAccessRulesRequest {
   int32 user_id = 1;
   repeated int32 allowed_room_ids = 2;
-  repeated int32 allowed_zone_ids = 3;
 }
 
 message GetUserAccessResponse {
   repeated int32 allowed_room_ids = 1;
-  repeated int32 allowed_zone_ids = 2;
 }
 
 message CheckAccessRequest {

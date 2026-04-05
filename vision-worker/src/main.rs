@@ -82,7 +82,16 @@ fn face_sharpness_score(face: &ImageBuffer<image::Rgb<u8>, Vec<u8>>) -> f32 {
 }
 
 fn is_cuda_runtime_failure(err: &str) -> bool {
-    err.contains("cudaError") || err.contains("CUDA error")
+    err.contains("cudaError")
+        || err.contains("CUDA error")
+        || err.contains("CUDNN_FE")
+        || err.contains("CUDNN_BACKEND_API_FAILED")
+        || err.contains("CUDNN_STATUS_EXECUTION_FAILED_CUDART")
+        || err.contains("Non-zero status code returned while running Conv node")
+}
+
+fn is_missing_cuda_provider_dylib(err: &str) -> bool {
+    err.contains("libonnxruntime_providers_shared.so")
 }
 
 fn env_usize(name: &str) -> Option<usize> {
@@ -368,6 +377,9 @@ impl ModelStore {
                                     "device_id={}: load failed: {}",
                                     device_id, details
                                 ));
+                                if is_missing_cuda_provider_dylib(&details) {
+                                    break;
+                                }
                             }
                         }
                     }
@@ -382,6 +394,9 @@ impl ModelStore {
                             "device_id={}: builder failed: {}",
                             device_id, details
                         ));
+                        if is_missing_cuda_provider_dylib(&details) {
+                            break;
+                        }
                     }
                 }
             }
@@ -419,7 +434,7 @@ impl ModelStore {
             }
         };
 
-        Ok(Self {
+        let store = Self {
             yunet: Mutex::new(yunet),
             arcface: Mutex::new(arcface),
             liveness: Mutex::new(liveness),
@@ -427,7 +442,27 @@ impl ModelStore {
             init_message: Mutex::new(init_msg),
             models_dir: models_dir.to_string(),
             use_cpu_runtime: AtomicBool::new(force_cpu),
-        })
+        };
+
+        if !store.use_cpu_runtime.load(Ordering::Relaxed) && env_startup_self_test() {
+            match store.startup_self_test() {
+                Ok(_) => {
+                    if let Ok(mut msg) = store.init_message.lock() {
+                        *msg = format!("{}; startup self-test passed", *msg);
+                    }
+                }
+                Err(e) => {
+                    let details = e.to_string();
+                    warn!(
+                        "Vision CUDA startup self-test failed: {}. Switching to CPU.",
+                        details
+                    );
+                    store.switch_to_cpu(&format!("startup self-test failed: {}", details))?;
+                }
+            }
+        }
+
+        Ok(store)
     }
 
     fn load_cpu(
@@ -516,6 +551,44 @@ impl ModelStore {
 
         Ok((yunet, arcface, liveness))
     }
+
+    fn startup_self_test(&self) -> Result<()> {
+        let rgb_img = ImageBuffer::from_fn(YUNET_INPUT_WIDTH, YUNET_INPUT_HEIGHT, |_x, _y| {
+            image::Rgb([128u8, 128u8, 128u8])
+        });
+
+        let mut input_tensor_yunet = Array4::<f32>::zeros((
+            1,
+            3,
+            YUNET_INPUT_HEIGHT as usize,
+            YUNET_INPUT_WIDTH as usize,
+        ));
+        for (x, y, pixel) in rgb_img.enumerate_pixels() {
+            input_tensor_yunet[[0, 0, y as usize, x as usize]] = pixel[0] as f32 / 255.0;
+            input_tensor_yunet[[0, 1, y as usize, x as usize]] = pixel[1] as f32 / 255.0;
+            input_tensor_yunet[[0, 2, y as usize, x as usize]] = pixel[2] as f32 / 255.0;
+        }
+        let (data_vec_yunet, _) = input_tensor_yunet.into_raw_vec_and_offset();
+        let input_value_yunet = Tensor::from_array((
+            vec![1, 3, YUNET_INPUT_HEIGHT as i64, YUNET_INPUT_WIDTH as i64],
+            data_vec_yunet,
+        ))?;
+        let mut session_yunet = self
+            .yunet
+            .lock()
+            .map_err(|_| anyhow::anyhow!("yunet mutex poisoned"))?;
+        let _ = session_yunet
+            .run(inputs![input_value_yunet])
+            .context("Yunet startup self-test inference failed")?;
+        Ok(())
+    }
+}
+
+fn env_startup_self_test() -> bool {
+    std::env::var("VISION_STARTUP_SELF_TEST")
+        .ok()
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(true)
 }
 
 // --- Реализация сервиса ---

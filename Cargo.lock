@@ -96,6 +96,7 @@ dependencies = [
  "ort",
  "prost",
  "rubato",
+ "rustfft",
  "serde",
  "shared",
  "tokio",
