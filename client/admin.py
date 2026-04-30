@@ -1202,6 +1202,16 @@ class PersonnelAccessTab(QWidget):
         if not item:
             return
         uid = item.data(Qt.ItemDataRole.UserRole)
+        user_name = item.text()
+        reply = QMessageBox.question(
+            self,
+            "Подтверждение удаления",
+            f"Вы действительно хотите удалить пользователя {user_name}?\n\nЭто действие нельзя отменить.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
         self.client.remove_user(uid)
         self.refresh_all()
 
@@ -1478,7 +1488,17 @@ class InfrastructureTab(QWidget):
             return
         data = item.data(0, Qt.ItemDataRole.UserRole)
         if data and data[0] == "device":
-            self.client.remove_device(data[1].id)
+            dev = data[1]
+            reply = QMessageBox.question(
+                self,
+                "Подтверждение удаления",
+                f"Вы действительно хотите удалить устройство «{dev.name}»?\n\nЭто действие нельзя отменить.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+            self.client.remove_device(dev.id)
             self.refresh_tree()
 
     def on_select(self, current, _prev):
@@ -1676,32 +1696,25 @@ class HelpTab(QWidget):
         top.addStretch()
         layout.addLayout(top)
 
-        self.path_label = QLabel("")
-        self.path_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        layout.addWidget(self.path_label)
-
         self.text = QTextEdit()
         self.text.setReadOnly(True)
-        self.text.setFont(QFont("Arial", 12))
+        self.text.setFont(QFont("Times New Roman", 14))
         layout.addWidget(self.text)
 
         self.load_doc(HELP_REFERENCE_PATH, "Справка")
 
     def load_doc(self, path: Path, title: str):
         if not path.exists():
-            self.path_label.setText(f"{title}: файл не найден ({path})")
             self.text.setPlainText(
-                f"Файл {path} отсутствует.\n"
+                f"Файл справки отсутствует.\n"
                 "Создайте документ или восстановите его из репозитория."
             )
             return
         try:
             content = path.read_text(encoding="utf-8")
         except Exception as e:
-            self.path_label.setText(f"{title}: ошибка чтения ({path})")
             self.text.setPlainText(f"Не удалось прочитать файл:\n{e}")
             return
-        self.path_label.setText(f"{title}: {path}")
         self.text.setMarkdown(content)
 
 class MonitoringTab(QWidget):
@@ -1769,9 +1782,9 @@ class MonitoringTab(QWidget):
         layout.addLayout(left, 14)
 
         center = QVBoxLayout()
-        self.video_label = QLabel("Выбери устройство-камеру слева")
+        self.video_label = QLabel("Выберите камеру слева")
         self.video_label.setMinimumSize(800, 600)  # Область предпросмотра 4:3.
-        self.video_label.setStyleSheet("background-color: black; border: 1px solid #555;")
+        self.video_label.setStyleSheet("background-color: black; border: 1px solid #555; color: white;")
         self.video_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         center.addWidget(self.video_label)
 
@@ -1806,7 +1819,7 @@ class MonitoringTab(QWidget):
 
     def _refresh_live_banner(self):
         if self.pipeline_running:
-            self.video_label.setText("Выбери устройство-камеру слева")
+            self.video_label.setText("Выберите камеру слева")
         else:
             self.video_label.setText(
                 "Система остановлена.\n"
@@ -2084,7 +2097,7 @@ class MonitoringTab(QWidget):
             self.selected_device_id = None
             self.selected_room_name = None
             self.selected_zone_name = None
-            self.video_label.setText("Выбери устройство-камеру слева")
+            self.video_label.setText("Выберите камеру слева")
             return
 
         dev = data[1]
@@ -2694,15 +2707,16 @@ class AdminApp(QMainWindow):
         self.settings_tab = SettingsTab(self.app, self.ui_settings, self.client)
         self.settings_tab.pipeline_state_changed.connect(self.on_pipeline_state_changed)
         self.settings_tab.settings_changed.connect(self.on_settings_changed)
-        self.tabs.addTab(self.monitor_tab, "📹 Мониторинг")
-        self.tabs.addTab(self.system_tab, "⚙️ Система")
-        self.tabs.addTab(self.settings_tab, "🎛 Настройки")
-        self.tabs.addTab(self.personnel_tab, "👥 Персонал и доступ")
-        self.tabs.addTab(InfrastructureTab(self.client), "🏗 Инфраструктура")
-        self.tabs.addTab(LogTab(self.client), "📜 Журнал")
-        self.tabs.addTab(HelpTab(), "❓ Справка")
+        self.tabs.addTab(self.monitor_tab, "Мониторинг")
+        self.tabs.addTab(self.system_tab, "Система")
+        self.tabs.addTab(self.settings_tab, "Настройки")
+        self.tabs.addTab(self.personnel_tab, "Персонал и доступ")
+        self.tabs.addTab(InfrastructureTab(self.client), "Инфраструктура")
+        self.tabs.addTab(LogTab(self.client), "Журнал")
+        self.tabs.addTab(HelpTab(), "Справка")
         self.tabs.currentChanged.connect(self.on_tab_change)
         self.setCentralWidget(self.tabs)
+        self.statusBar().showMessage("Готово", 0)
         self.pipeline_state_timer = QTimer(self)
         self.pipeline_state_timer.timeout.connect(self.refresh_pipeline_state)
         self.pipeline_state_timer.start(1500)
@@ -2745,32 +2759,13 @@ if __name__ == "__main__":
         gateway_addr = sys.argv[1].strip()
 
     client = BiometryClient(gateway_addr)
-    if not client.wait_until_ready(total_timeout=45.0, probe_timeout=2.0):
-        extra_hint = ""
-        try:
-            # Если docker compose доступен, показываем его вывод прямо в ошибке.
-            ps = subprocess.check_output(["docker", "compose", "ps"], text=True, stderr=subprocess.STDOUT)
-            extra_hint = (
-                "\n\n"
-                "Статус docker compose:\n"
-                f"{ps}\n"
-                "Проверь логи gateway:\n"
-                "  docker compose logs --tail=120 gateway-service\n"
-            )
-        except Exception:
-            pass
-
-        QMessageBox.critical(
-            None,
-            "Шлюз недоступен",
-            f"Не удалось подключиться к gRPC Gateway по адресу {gateway_addr}.\n"
-            "Проверьте, что gateway-service запущен и порт 50051 проброшен.\n"
-            "Docker: ./start_docker.sh\n"
-            "По умолчанию клиент использует 127.0.0.1:50051 (или GATEWAY_ADDR)."
-            + extra_hint,
-        )
-        sys.exit(1)
+    server_available = client.wait_until_ready(total_timeout=8.0, probe_timeout=1.0)
 
     w = AdminApp(app, client, ui_settings)
+    if not server_available:
+        w.statusBar().showMessage(
+            "Сервер недоступен. Запустите сервисы: ./start_docker.sh",
+            0,
+        )
     w.show()
     sys.exit(app.exec())
